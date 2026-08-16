@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>POS Multi-Store</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ================= PAGE A: PROFILE + STORE PICKER ================= -->
+<section id="page-login" class="page active">
+  <div class="profile-card">
+    <div class="avatar"></div>
+    <div class="profile-info">
+      <div><span class="label">User ID :</span></div>
+      <div><span class="label">Name :</span> <span id="profile-name">-</span></div>
+      <div><span class="label">Permission :</span> <span id="profile-permission">-</span></div>
+    </div>
+  </div>
+  <div class="divider"></div>
+
+  <div class="store-grid" id="store-grid">
+    <!-- store tiles injected by app.js -->
+  </div>
+
+  <div class="footer-credit">
+    Credits : Open Source UI Web app<br>Napat
+  </div>
+</section>
+
+<!-- ================= PAGE B: ORDER ENTRY ================= -->
+<section id="page-order" class="page">
+  <header class="order-header">
+    <button id="btn-back" class="btn-back">←</button>
+    <div class="order-store-name" id="order-store-name">ร้านค้า</div>
+    <div class="order-user-name" id="order-user-name"></div>
+  </header>
+
+  <div class="product-grid" id="product-grid">
+    <!-- product tiles injected by app.js -->
+  </div>
+
+  <div class="summary-panel">
+    <div class="summary-title">สรุปรายการสินค้า</div>
+    <div id="summary-lines" class="summary-lines">
+      <div class="summary-empty">ยังไม่ได้เลือกสินค้า</div>
+    </div>
+    <div class="summary-total">
+      รวม <span id="summary-total">0</span> บาท
+    </div>
+  </div>
+
+  <button id="btn-save-order" class="btn-save">บันทึกส่งออเดอร์</button>
+</section>
+
+<!-- ================= MODAL: PICK COURIER ================= -->
+<div id="modal-courier" class="modal-overlay">
+  <div class="modal-box">
+    <div class="modal-title">เลือกผู้จัดส่ง</div>
+    <div id="courier-options" class="courier-options"></div>
+    <button id="btn-cancel-courier" class="btn-cancel">ยกเลิก</button>
+  </div>
+</div>
+
+<!-- ================= MODAL: NEW USER NAME ================= -->
+<div id="modal-newuser" class="modal-overlay">
+  <div class="modal-box">
+    <div class="modal-title">ยินดีต้อนรับ</div>
+    <div class="modal-sub">กรอกชื่อของคุณเพื่อเริ่มใช้งาน</div>
+    <input id="input-username" class="text-input" type="text" placeholder="ชื่อของคุณ">
+    <button id="btn-confirm-name" class="btn-save">เริ่มใช้งาน</button>
+  </div>
+</div>
+
+<!-- ================= TOAST ================= -->
+<div id="toast" class="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

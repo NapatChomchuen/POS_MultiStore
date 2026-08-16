@@ -216,14 +216,23 @@ function saveAvatar_(clientId, base64Data, mimeType) {
   const file = folder.createFile(blob);
   file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
 
-  // NOTE: drive.google.com/thumbnail?id=... often fails to render when hotlinked
-  // as an <img> from an outside website (Google blocks/breaks it inconsistently).
-  // lh3.googleusercontent.com/d/<id> is the reliable format for public Drive images.
-  return 'https://lh3.googleusercontent.com/d/' + file.getId();
+  // Both drive.google.com/thumbnail?id=... and lh3.googleusercontent.com/d/<id>
+  // turned out to be unreliable for hotlinking as an <img src> from an outside
+  // website (Google's public-link thumbnail pipeline is inconsistent/delayed).
+  // The reliable fix: serve the image bytes ourselves through this same Web App
+  // (doGet action=avatar below) — the script already has direct access to the
+  // file since it created it, so there's no dependency on Drive's public-link
+  // behavior at all.
+  return avatarProxyUrl_(file.getId());
+}
+
+function avatarProxyUrl_(fileId) {
+  return ScriptApp.getService().getUrl() + '?action=avatar&id=' + fileId;
 }
 
 /** ================== ONE-TIME MIGRATION (only needed if avatars were saved
- *  using the old, unreliable drive.google.com/thumbnail URL format) ================== */
+ *  using an older URL format: drive.google.com/thumbnail?id=... or
+ *  lh3.googleusercontent.com/d/<id> — converts them to the proxy URL above) */
 function migrateAvatarUrls() {
   const ss = getSS_();
   const sh = ss.getSheetByName(SHEET_USERS);
@@ -234,9 +243,9 @@ function migrateAvatarUrls() {
 
   for (let r = 1; r < values.length; r++) {
     const url = String(values[r][avatarCol] || '');
-    const match = url.match(/thumbnail\?id=([^&]+)/);
+    const match = url.match(/thumbnail\?id=([^&]+)/) || url.match(/googleusercontent\.com\/d\/([^/?&]+)/);
     if (match) {
-      sh.getRange(r + 1, avatarCol + 1).setValue('https://lh3.googleusercontent.com/d/' + match[1]);
+      sh.getRange(r + 1, avatarCol + 1).setValue(avatarProxyUrl_(match[1]));
     }
   }
   SpreadsheetApp.flush();
@@ -299,6 +308,18 @@ function calcLineTotals_(items, invById) {
 /** ================== GET (read-only queries) ================== */
 function doGet(e) {
   const action = e.parameter.action;
+
+  // serves an uploaded avatar's raw image bytes directly through this Web App
+  // (bypasses Drive's flaky public-link/thumbnail behavior entirely) — this one
+  // returns a Blob instead of JSON, so it's handled before the try/ss setup below.
+  if (action === 'avatar') {
+    try {
+      return DriveApp.getFileById(e.parameter.id).getBlob();
+    } catch (err) {
+      return jsonOut_({ ok: false, error: String(err) });
+    }
+  }
+
   const ss = getSS_();
 
   try {

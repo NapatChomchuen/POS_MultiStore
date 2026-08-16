@@ -114,7 +114,10 @@ async function confirmNewUser() {
 
 /** Downscales + compresses a chosen photo client-side before upload, so avatar
  * uploads stay fast on mobile data (phone photos can be several MB otherwise). */
-function resizeImageFile(file, maxDim = 400, quality = 0.82) {
+// Small on purpose: the photo is now stored as a data: URI directly inside a
+// Google Sheets cell (see README/Code.gs), which has a ~50,000 character limit
+// per cell — 280px keeps the base64 string comfortably under that with margin.
+function resizeImageFile(file, maxDim = 280, quality = 0.75) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = reject;

@@ -34,7 +34,6 @@ const ORDERS_HEADERS = [
   'order_id', 'timestamp', 'store_id', 'client_id', 'user_name',
   'items_json', 'item_summary', 'total', 'courier', 'status',
 ];
-const AVATAR_FOLDER_NAME = 'POS_MultiStore_Avatars'; // Drive folder that stores uploaded profile photos
 
 function getSS_() {
   return SpreadsheetApp.openById(SS_ID);
@@ -195,44 +194,25 @@ function nowIso_() {
   return new Date().toISOString();
 }
 
-/** ================== AVATAR UPLOAD (Google Drive) ==================
- *  Saves a base64 photo to a Drive folder and returns a URL usable in an <img> tag.
- *  The first call will prompt for an extra Drive permission when you re-run/redeploy. */
-function getOrCreateAvatarFolder_() {
-  const existing = DriveApp.getFoldersByName(AVATAR_FOLDER_NAME);
-  if (existing.hasNext()) return existing.next();
-  return DriveApp.createFolder(AVATAR_FOLDER_NAME);
-}
-
-function saveAvatar_(clientId, base64Data, mimeType) {
-  const folder = getOrCreateAvatarFolder_();
-  const ext = (mimeType || 'image/png').split('/')[1] || 'png';
-  const blob = Utilities.newBlob(Utilities.base64Decode(base64Data), mimeType || 'image/png', clientId + '.' + ext);
-
-  // remove any previous avatar for this user so old photos don't pile up in Drive
-  const old = folder.getFilesByName(clientId + '.' + ext);
-  while (old.hasNext()) old.next().setTrashed(true);
-
-  const file = folder.createFile(blob);
-  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-
-  // Both drive.google.com/thumbnail?id=... and lh3.googleusercontent.com/d/<id>
-  // turned out to be unreliable for hotlinking as an <img src> from an outside
-  // website (Google's public-link thumbnail pipeline is inconsistent/delayed).
-  // The reliable fix: serve the image bytes ourselves through this same Web App
-  // (doGet action=avatar below) — the script already has direct access to the
-  // file since it created it, so there's no dependency on Drive's public-link
-  // behavior at all.
-  return avatarProxyUrl_(file.getId());
-}
-
-function avatarProxyUrl_(fileId) {
-  return ScriptApp.getService().getUrl() + '?action=avatar&id=' + fileId;
+/** ================== AVATAR STORAGE ==================
+ *  Three different Google Drive hotlink formats were all tried and all turned
+ *  out unreliable when embedded as an <img> from an outside website (and
+ *  returning a raw Blob from doGet isn't supported by Apps Script Web Apps —
+ *  it errors with "script completed but the return value isn't a supported
+ *  result type"). The reliable fix: skip external hosting entirely and store
+ *  the photo as a data: URI directly in the Users sheet. The browser renders
+ *  a data: URI instantly with zero extra network requests, so there's nothing
+ *  that can fail to load. The photo is already resized/compressed client-side
+ *  (app.js) before it gets here, so the resulting string comfortably fits in
+ *  a single Sheets cell (well under the ~50,000 character cell limit). */
+function buildAvatarDataUri_(base64Data, mimeType) {
+  return 'data:' + (mimeType || 'image/jpeg') + ';base64,' + base64Data;
 }
 
 /** ================== ONE-TIME MIGRATION (only needed if avatars were saved
- *  using an older URL format: drive.google.com/thumbnail?id=... or
- *  lh3.googleusercontent.com/d/<id> — converts them to the proxy URL above) */
+ *  using an older Drive-hotlink URL format from an earlier version of this
+ *  script — re-downloads the photo from Drive and re-saves it as a data: URI
+ *  in the sheet, so nobody has to re-upload their photo). */
 function migrateAvatarUrls() {
   const ss = getSS_();
   const sh = ss.getSheetByName(SHEET_USERS);
@@ -243,9 +223,19 @@ function migrateAvatarUrls() {
 
   for (let r = 1; r < values.length; r++) {
     const url = String(values[r][avatarCol] || '');
-    const match = url.match(/thumbnail\?id=([^&]+)/) || url.match(/googleusercontent\.com\/d\/([^/?&]+)/);
-    if (match) {
-      sh.getRange(r + 1, avatarCol + 1).setValue(avatarProxyUrl_(match[1]));
+    if (url.startsWith('data:')) continue; // already migrated
+
+    const match = url.match(/thumbnail\?id=([^&]+)/)
+      || url.match(/googleusercontent\.com\/d\/([^/?&]+)/)
+      || url.match(/[?&]id=([^&]+)/);
+    if (!match) continue;
+
+    try {
+      const blob = DriveApp.getFileById(match[1]).getBlob();
+      const dataUri = buildAvatarDataUri_(Utilities.base64Encode(blob.getBytes()), blob.getContentType());
+      sh.getRange(r + 1, avatarCol + 1).setValue(dataUri);
+    } catch (err) {
+      // file may no longer exist / not accessible - leave the cell as-is
     }
   }
   SpreadsheetApp.flush();
@@ -308,18 +298,6 @@ function calcLineTotals_(items, invById) {
 /** ================== GET (read-only queries) ================== */
 function doGet(e) {
   const action = e.parameter.action;
-
-  // serves an uploaded avatar's raw image bytes directly through this Web App
-  // (bypasses Drive's flaky public-link/thumbnail behavior entirely) — this one
-  // returns a Blob instead of JSON, so it's handled before the try/ss setup below.
-  if (action === 'avatar') {
-    try {
-      return DriveApp.getFileById(e.parameter.id).getBlob();
-    } catch (err) {
-      return jsonOut_({ ok: false, error: String(err) });
-    }
-  }
-
   const ss = getSS_();
 
   try {
@@ -368,7 +346,7 @@ function doPost(e) {
 
       let avatarUrl = user ? user.avatar_url : '';
       if (body.avatar_base64) {
-        avatarUrl = saveAvatar_(body.client_id, body.avatar_base64, body.avatar_mime);
+        avatarUrl = buildAvatarDataUri_(body.avatar_base64, body.avatar_mime);
       }
 
       if (!user) {

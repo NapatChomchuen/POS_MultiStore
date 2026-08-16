@@ -2,7 +2,13 @@
  *  PWA and opens instantly on repeat visits. It does NOT cache API calls to
  *  Google Apps Script, so order data is always fresh/live. */
 
-const CACHE_NAME = 'pos-multistore-v1';
+// Bump this version string every time app.js/index.html/style.css change.
+// Changing this file is what makes the browser notice there's an update at
+// all — if sw.js itself is byte-identical to what's already installed, the
+// browser never re-installs it and keeps serving the OLD cached app shell
+// forever, no matter how many times you edit app.js on the server or hard-
+// refresh the page.
+const CACHE_NAME = 'pos-multistore-v2';
 const APP_SHELL = [
   './',
   './index.html',
@@ -15,7 +21,13 @@ const APP_SHELL = [
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL))
+    caches.open(CACHE_NAME).then((cache) =>
+      // { cache: 'reload' } forces a real network fetch for each file instead
+      // of letting the browser's normal HTTP cache hand back a stale copy.
+      Promise.all(APP_SHELL.map((url) =>
+        fetch(url, { cache: 'reload' }).then((res) => cache.put(url, res))
+      ))
+    )
   );
   self.skipWaiting();
 });

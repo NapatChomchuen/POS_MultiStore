@@ -25,7 +25,10 @@ html, body {
   max-width: 480px;
   margin: 0 auto;
   min-height: 100vh;
-  padding: 24px 20px 40px;
+  /* extra top/side/bottom padding on notch/Dynamic-Island phones (iPhone) so
+     content doesn't sit under the status bar or home-indicator area */
+  padding: calc(24px + env(safe-area-inset-top)) calc(20px + env(safe-area-inset-right))
+           calc(40px + env(safe-area-inset-bottom)) calc(20px + env(safe-area-inset-left));
 }
 .page.active { display: block; }
 
@@ -121,7 +124,7 @@ html, body {
 
 .footer-credit {
   position: fixed;
-  bottom: 20px;
+  bottom: calc(20px + env(safe-area-inset-bottom));
   left: 0;
   right: 0;
   text-align: center;
@@ -268,7 +271,8 @@ html, body {
   background: rgba(0,0,0,.45);
   align-items: center;
   justify-content: center;
-  padding: 20px;
+  padding: calc(20px + env(safe-area-inset-top)) calc(20px + env(safe-area-inset-right))
+           calc(20px + env(safe-area-inset-bottom)) calc(20px + env(safe-area-inset-left));
   z-index: 50;
 }
 .modal-overlay.active { display: flex; }
@@ -318,7 +322,7 @@ html, body {
 .toast {
   position: fixed;
   left: 50%;
-  bottom: 30px;
+  bottom: calc(30px + env(safe-area-inset-bottom));
   transform: translate(-50%, 20px);
   background: #1A1A1A;
   color: #fff;

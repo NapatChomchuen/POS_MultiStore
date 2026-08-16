@@ -15,6 +15,12 @@
  *     - Execute as: Me
  *     - Who has access: Anyone
  *  5. Copy the Web app URL and paste it into GAS_URL in app.js.
+ *
+ *  UPDATING AN EXISTING SHEET (bundle pricing added later):
+ *  If your Inventory tab already existed before the bundle_group/bundle_price
+ *  columns were added, run `migrateBundlePricing` once (function dropdown ->
+ *  migrateBundlePricing -> Run) to add the columns and tag the Ammarit single
+ *  items automatically, instead of re-running `setup`.
  * =================================================================== */
 
 const SS_ID = '1S2AXBIOSbLNGOUU3kD23H6j-ZP0ttsou8kDkSOkuFcA'; // POS_MultiStore_Database
@@ -28,6 +34,7 @@ const ORDERS_HEADERS = [
   'order_id', 'timestamp', 'store_id', 'client_id', 'user_name',
   'items_json', 'item_summary', 'total', 'courier', 'status',
 ];
+const AVATAR_FOLDER_NAME = 'POS_MultiStore_Avatars'; // Drive folder that stores uploaded profile photos
 
 function getSS_() {
   return SpreadsheetApp.openById(SS_ID);
@@ -40,28 +47,40 @@ function setup() {
   // remove default "Sheet1" once real tabs exist
   const defaultSheet = ss.getSheetByName('Sheet1');
 
+  // logo_url: relative/absolute path to a real logo image (e.g. "images/stores/shop_a.png").
+  // Leave blank to keep showing the colored circle + logo_emoji as before.
   const storeRows = [
-    ['shop_a', 'ผู้ชายขายน้ำ', '💧', '#8B7FD6', true],
-    ['shop_b', 'นาแบะโอนลี่', '🍘', '#8B7FD6', true],
+    ['shop_a', 'ผู้ชายขายน้ำ', '💧', '#8B7FD6', true, ''],
+    ['shop_b', 'นาแบะโอนลี่', '🍘', '#8B7FD6', true, ''],
   ];
 
-  ensureSheet_(ss, SHEET_STORES, ['store_id', 'name', 'logo_emoji', 'color', 'active'], storeRows);
+  ensureSheet_(ss, SHEET_STORES, ['store_id', 'name', 'logo_emoji', 'color', 'active', 'logo_url'], storeRows);
 
-  ensureSheet_(ss, SHEET_USERS, ['client_id', 'name', 'permission', 'created_at', 'last_seen'], []);
+  // avatar_url is filled in automatically when a user uploads a profile photo
+  // from the "new user" screen (saved to Google Drive, see doPost/registerUser).
+  ensureSheet_(ss, SHEET_USERS, ['client_id', 'name', 'permission', 'created_at', 'last_seen', 'avatar_url'], []);
 
-  ensureSheet_(ss, SHEET_INVENTORY, ['store_id', 'item_id', 'item_name', 'price', 'sort_order', 'active'], [
-    ['shop_a', 'a1', 'Ammarit 600ml x3', 110, 1, true],
-    ['shop_a', 'a2', 'Ammarit 1500ml x3', 110, 2, true],
-    ['shop_a', 'a3', 'Ammarit 600ml', 40, 3, true],
-    ['shop_a', 'a4', 'Ammarit 1500ml', 40, 4, true],
-    ['shop_a', 'a5', 'Crystal 600ml', 55, 5, true],
-    ['shop_a', 'a6', 'Crystal 1500ml', 55, 6, true],
-    ['shop_a', 'a7', 'Singha 600ml', 55, 7, true],
-    ['shop_a', 'a8', 'Singha 1500ml', 55, 8, true],
-    ['shop_a', 'a9', 'Ammarit 300ml', 40, 9, true],
-    ['shop_b', 'b1', 'นาแบะเล็ก', 59, 1, true],
-    ['shop_b', 'b2', 'นาแบะใหญ่', 79, 2, true],
-    ['shop_b', 'b3', 'ข้าว', 10, 3, true],
+  // bundle_group / bundle_price: items that share the same bundle_group pool their
+  // quantities together — every complete group of 3 (across sizes) is charged at
+  // bundle_price, the leftover (0-2 pcs) at the item's own regular price. Leave both
+  // blank for items that don't have a bundle promo.
+  // image_url: relative/absolute path to a product photo (e.g. "images/products/ammarit600.png").
+  // Leave blank to keep showing the plain colored box as before.
+  ensureSheet_(ss, SHEET_INVENTORY, [
+    'store_id', 'item_id', 'item_name', 'price', 'sort_order', 'active', 'bundle_group', 'bundle_price', 'image_url',
+  ], [
+    ['shop_a', 'a1', 'Ammarit 600ml x3', 110, 1, true, '', '', ''],
+    ['shop_a', 'a2', 'Ammarit 1500ml x3', 110, 2, true, '', '', ''],
+    ['shop_a', 'a3', 'Ammarit 600ml', 40, 3, true, 'ammarit_single', 110, ''],
+    ['shop_a', 'a4', 'Ammarit 1500ml', 40, 4, true, 'ammarit_single', 110, ''],
+    ['shop_a', 'a5', 'Crystal 600ml', 55, 5, true, '', '', ''],
+    ['shop_a', 'a6', 'Crystal 1500ml', 55, 6, true, '', '', ''],
+    ['shop_a', 'a7', 'Singha 600ml', 55, 7, true, '', '', ''],
+    ['shop_a', 'a8', 'Singha 1500ml', 55, 8, true, '', '', ''],
+    ['shop_a', 'a9', 'Ammarit 300ml', 40, 9, true, 'ammarit_single', 110, ''],
+    ['shop_b', 'b1', 'นาแบะเล็ก', 59, 1, true, '', '', ''],
+    ['shop_b', 'b2', 'นาแบะใหญ่', 79, 2, true, '', '', ''],
+    ['shop_b', 'b3', 'ข้าว', 10, 3, true, '', '', ''],
   ]);
 
   ensureSheet_(ss, SHEET_COURIERS, ['courier_id', 'name', 'active'], [
@@ -89,6 +108,58 @@ function setup() {
 /** Returns (creating if needed) the Orders tab that belongs to a given store_id. */
 function getOrdersSheet_(ss, storeId) {
   return ensureSheet_(ss, ORDERS_PREFIX + storeId, ORDERS_HEADERS, []);
+}
+
+/** ================== ONE-TIME MIGRATION (only needed if Inventory already
+ *  existed before bundle pricing was added) ================== */
+function migrateBundlePricing() {
+  const ss = getSS_();
+  const sh = ss.getSheetByName(SHEET_INVENTORY);
+  const values = sh.getDataRange().getValues();
+  const headers = values[0];
+
+  let bundleGroupCol = headers.indexOf('bundle_group');
+  let bundlePriceCol = headers.indexOf('bundle_price');
+
+  if (bundleGroupCol === -1) {
+    sh.getRange(1, headers.length + 1).setValue('bundle_group');
+    bundleGroupCol = headers.length;
+    headers.push('bundle_group');
+  }
+  if (bundlePriceCol === -1) {
+    sh.getRange(1, headers.length + 1).setValue('bundle_price');
+    bundlePriceCol = headers.length;
+    headers.push('bundle_price');
+  }
+
+  const itemIdCol = headers.indexOf('item_id');
+  const ammaritSingles = ['a3', 'a4', 'a9']; // Ammarit 600ml / 1500ml / 300ml (single pieces, 40.- each)
+
+  for (let r = 1; r < values.length; r++) {
+    if (ammaritSingles.includes(values[r][itemIdCol])) {
+      sh.getRange(r + 1, bundleGroupCol + 1).setValue('ammarit_single');
+      sh.getRange(r + 1, bundlePriceCol + 1).setValue(110);
+    }
+  }
+
+  SpreadsheetApp.flush();
+}
+
+/** ================== ONE-TIME MIGRATION (only needed if Stores/Users/Inventory
+ *  already existed before the image columns were added) ================== */
+function migrateImageColumns() {
+  const ss = getSS_();
+  addColumnIfMissing_(ss.getSheetByName(SHEET_STORES), 'logo_url');
+  addColumnIfMissing_(ss.getSheetByName(SHEET_USERS), 'avatar_url');
+  addColumnIfMissing_(ss.getSheetByName(SHEET_INVENTORY), 'image_url');
+  SpreadsheetApp.flush();
+}
+
+function addColumnIfMissing_(sh, headerName) {
+  const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  if (headers.indexOf(headerName) === -1) {
+    sh.getRange(1, headers.length + 1).setValue(headerName);
+  }
 }
 
 function ensureSheet_(ss, name, headers, seedRows) {
@@ -122,6 +193,83 @@ function jsonOut_(obj) {
 
 function nowIso_() {
   return new Date().toISOString();
+}
+
+/** ================== AVATAR UPLOAD (Google Drive) ==================
+ *  Saves a base64 photo to a Drive folder and returns a URL usable in an <img> tag.
+ *  The first call will prompt for an extra Drive permission when you re-run/redeploy. */
+function getOrCreateAvatarFolder_() {
+  const existing = DriveApp.getFoldersByName(AVATAR_FOLDER_NAME);
+  if (existing.hasNext()) return existing.next();
+  return DriveApp.createFolder(AVATAR_FOLDER_NAME);
+}
+
+function saveAvatar_(clientId, base64Data, mimeType) {
+  const folder = getOrCreateAvatarFolder_();
+  const ext = (mimeType || 'image/png').split('/')[1] || 'png';
+  const blob = Utilities.newBlob(Utilities.base64Decode(base64Data), mimeType || 'image/png', clientId + '.' + ext);
+
+  // remove any previous avatar for this user so old photos don't pile up in Drive
+  const old = folder.getFilesByName(clientId + '.' + ext);
+  while (old.hasNext()) old.next().setTrashed(true);
+
+  const file = folder.createFile(blob);
+  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  return 'https://drive.google.com/thumbnail?id=' + file.getId() + '&sz=w300';
+}
+
+/** ================== BUNDLE PRICING ==================
+ *  Items that share the same bundle_group (e.g. Ammarit 600ml / 1500ml / 300ml,
+ *  all sold single at 40.-) pool their quantities together: every complete group
+ *  of 3 pieces (any mix of sizes) is charged bundle_price (110.-), the remaining
+ *  0-2 pieces are charged at each item's own regular price. */
+function calcBundleTotal_(qty, singlePrice, bundlePrice) {
+  if (!bundlePrice) return qty * singlePrice;
+  const bundles = Math.floor(qty / 3);
+  const rem = qty % 3;
+  return bundles * bundlePrice + rem * singlePrice;
+}
+
+/** Computes a line_total for every item in the order, pooling qty across items
+ *  that share the same bundle_group before applying bundle pricing, then splits
+ *  the group's total back across each item's line proportionally (remainder on
+ *  the last line so the lines always sum exactly to the group/order total).
+ *  invById: { item_id: { bundle_group, bundle_price, ... } } from the Inventory sheet. */
+function calcLineTotals_(items, invById) {
+  const groups = {}; // key -> { qty, indices, singlePrice, bundlePrice }
+
+  items.forEach((it, idx) => {
+    const inv = invById[String(it.item_id)] || {};
+    const singlePrice = Number(it.price || 0);
+    const bundleGroup = inv.bundle_group ? String(inv.bundle_group) : '';
+    const bundlePrice = bundleGroup ? Number(inv.bundle_price || 0) : 0;
+    const key = bundleGroup || ('__single__' + it.item_id);
+
+    if (!groups[key]) groups[key] = { qty: 0, indices: [], singlePrice, bundlePrice };
+    groups[key].qty += Number(it.qty || 0);
+    groups[key].indices.push(idx);
+  });
+
+  const lineTotals = new Array(items.length).fill(0);
+
+  Object.keys(groups).forEach(key => {
+    const g = groups[key];
+    const groupTotal = calcBundleTotal_(g.qty, g.singlePrice, g.bundlePrice);
+    let allocated = 0;
+    g.indices.forEach((idx, i) => {
+      const qty = Number(items[idx].qty || 0);
+      let lt;
+      if (i === g.indices.length - 1) {
+        lt = Number((groupTotal - allocated).toFixed(2)); // remainder absorbs rounding drift
+      } else {
+        lt = Number(((groupTotal * qty) / g.qty).toFixed(2));
+        allocated += lt;
+      }
+      lineTotals[idx] = lt;
+    });
+  });
+
+  return lineTotals;
 }
 
 /** ================== GET (read-only queries) ================== */
@@ -172,13 +320,35 @@ function doPost(e) {
       const sh = ss.getSheetByName(SHEET_USERS);
       const users = sheetToObjects_(sh);
       let user = users.find(u => u.client_id === body.client_id);
+
+      let avatarUrl = user ? user.avatar_url : '';
+      if (body.avatar_base64) {
+        avatarUrl = saveAvatar_(body.client_id, body.avatar_base64, body.avatar_mime);
+      }
+
       if (!user) {
-        sh.appendRow([body.client_id, body.name || 'ผู้ใช้งาน', body.permission || 'Staff', nowIso_(), nowIso_()]);
-        user = { client_id: body.client_id, name: body.name || 'ผู้ใช้งาน', permission: body.permission || 'Staff' };
+        sh.appendRow([
+          body.client_id,
+          body.name || 'ผู้ใช้งาน',
+          body.permission || 'Staff',
+          nowIso_(),
+          nowIso_(),
+          avatarUrl || '',
+        ]);
+        user = {
+          client_id: body.client_id,
+          name: body.name || 'ผู้ใช้งาน',
+          permission: body.permission || 'Staff',
+          avatar_url: avatarUrl || '',
+        };
       } else {
-        // touch last_seen
+        // touch last_seen (+ update avatar if a new one was uploaded)
         const rowIdx = users.findIndex(u => u.client_id === body.client_id) + 2;
         sh.getRange(rowIdx, 5).setValue(nowIso_());
+        if (body.avatar_base64) {
+          sh.getRange(rowIdx, 6).setValue(avatarUrl);
+          user.avatar_url = avatarUrl;
+        }
       }
       return jsonOut_({ ok: true, user });
     }
@@ -187,8 +357,18 @@ function doPost(e) {
       const sh = getOrdersSheet_(ss, body.store_id); // each store writes to its own Orders_<store_id> tab
       const orderId = 'ORD-' + new Date().getTime();
       const items = body.items || []; // [{item_id, item_name, qty, price}]
-      const total = items.reduce((s, it) => s + Number(it.qty) * Number(it.price), 0);
-      const summary = items.map(it => `${it.item_name} x${it.qty}`).join(', ');
+
+      // total is always recomputed server-side from the Inventory sheet's bundle
+      // rules — never trusts the client's total, so pricing stays correct even if
+      // the frontend is out of date.
+      const invRows = sheetToObjects_(ss.getSheetByName(SHEET_INVENTORY));
+      const invById = {};
+      invRows.forEach(r => (invById[String(r.item_id)] = r));
+
+      const lineTotals = calcLineTotals_(items, invById);
+      const total = lineTotals.reduce((s, v) => s + v, 0);
+      const summary = items.map((it, i) => `${it.item_name} x${it.qty} (${lineTotals[i]}.-)`).join(', ');
+      const itemsWithTotals = items.map((it, i) => Object.assign({}, it, { line_total: lineTotals[i] }));
 
       sh.appendRow([
         orderId,
@@ -196,7 +376,7 @@ function doPost(e) {
         body.store_id,
         body.client_id,
         body.user_name || '',
-        JSON.stringify(items),
+        JSON.stringify(itemsWithTotals),
         summary,
         total,
         body.courier || '',

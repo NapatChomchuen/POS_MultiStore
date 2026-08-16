@@ -12,9 +12,11 @@ const state = {
   stores: [],
   currentStore: null,
   inventory: [],
+  invById: {},      // item_id -> inventory row (has bundle_group / bundle_price)
   couriers: [],
   cart: {},          // item_id -> { item_name, price, qty }
   pendingCourier: null,
+  pendingAvatar: null, // { base64, mime } chosen in the "new user" modal, before registering
 };
 
 /* ---------------- Client ID (identifies this browser/device) ---------------- */
@@ -86,6 +88,8 @@ async function init() {
 function renderProfile() {
   document.getElementById('profile-name').textContent = state.user.name;
   document.getElementById('profile-permission').textContent = state.user.permission;
+  const avatarEl = document.getElementById('profile-avatar');
+  avatarEl.style.backgroundImage = state.user.avatar_url ? `url("${state.user.avatar_url}")` : '';
 }
 
 function openNewUserModal() {
@@ -95,10 +99,74 @@ function openNewUserModal() {
 async function confirmNewUser() {
   const name = document.getElementById('input-username').value.trim();
   if (!name) return;
-  const { user } = await apiPost('registerUser', { client_id: state.clientId, name, permission: 'Staff' });
+  const payload = { client_id: state.clientId, name, permission: 'Staff' };
+  if (state.pendingAvatar) {
+    payload.avatar_base64 = state.pendingAvatar.base64;
+    payload.avatar_mime = state.pendingAvatar.mime;
+  }
+  const { user } = await apiPost('registerUser', payload);
   state.user = user;
   renderProfile();
   document.getElementById('modal-newuser').classList.remove('active');
+}
+
+/* ---------------- Profile / avatar photo picking ---------------- */
+
+/** Downscales + compresses a chosen photo client-side before upload, so avatar
+ * uploads stay fast on mobile data (phone photos can be several MB otherwise). */
+function resizeImageFile(file, maxDim = 400, quality = 0.82) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = reject;
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onerror = reject;
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > height) {
+          if (width > maxDim) { height = Math.round(height * (maxDim / width)); width = maxDim; }
+        } else if (height > maxDim) {
+          width = Math.round(width * (maxDim / height)); height = maxDim;
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+        const dataUrl = canvas.toDataURL('image/jpeg', quality);
+        resolve({ base64: dataUrl.split(',')[1], mime: 'image/jpeg' });
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function handleNewAvatarChosen(file) {
+  if (!file) return;
+  const resized = await resizeImageFile(file);
+  state.pendingAvatar = resized;
+  document.getElementById('new-avatar-preview').style.backgroundImage = `url("data:${resized.mime};base64,${resized.base64}")`;
+}
+
+async function handleExistingAvatarChosen(file) {
+  if (!file || !state.user) return;
+  showToast('กำลังอัพโหลดรูป...');
+  try {
+    const resized = await resizeImageFile(file);
+    const { user } = await apiPost('registerUser', {
+      client_id: state.clientId,
+      name: state.user.name,
+      permission: state.user.permission,
+      avatar_base64: resized.base64,
+      avatar_mime: resized.mime,
+    });
+    state.user = user;
+    renderProfile();
+    showToast('เปลี่ยนรูปโปรไฟล์แล้ว');
+  } catch (err) {
+    showToast('อัพโหลดรูปไม่สำเร็จ');
+    console.error(err);
+  }
 }
 
 /* ---------------- Store picker (Page A) ---------------- */
@@ -118,8 +186,11 @@ function renderStoreGrid() {
   state.stores.forEach(store => {
     const tile = document.createElement('button');
     tile.className = 'store-tile';
+    const logoStyle = store.logo_url
+      ? `background-image:url("${store.logo_url}")`
+      : `background:${store.color || '#8B7FD6'}`;
     tile.innerHTML = `
-      <div class="store-logo" style="background:${store.color || '#8B7FD6'}">${store.logo_emoji || ''}</div>
+      <div class="store-logo" style="${logoStyle}">${store.logo_url ? '' : (store.logo_emoji || '')}</div>
       <div class="store-name">${store.name}</div>
     `;
     tile.addEventListener('click', () => openStore(store));
@@ -138,6 +209,8 @@ async function openStore(store) {
   try {
     const { items } = await apiGet('getInventory', { store_id: store.store_id });
     state.inventory = items || [];
+    state.invById = {};
+    state.inventory.forEach(i => (state.invById[i.item_id] = i));
     renderProductGrid();
     renderSummary();
   } catch (err) {
@@ -152,8 +225,9 @@ function renderProductGrid() {
   state.inventory.forEach(item => {
     const tile = document.createElement('div');
     tile.className = 'product-tile';
+    const boxStyle = item.image_url ? ` style="background-image:url('${item.image_url}')"` : '';
     tile.innerHTML = `
-      <div class="product-box" data-id="${item.item_id}">
+      <div class="product-box" data-id="${item.item_id}"${boxStyle}>
         <div class="product-qty-badge">0</div>
       </div>
       <div class="product-name">${item.item_name}</div>
@@ -190,22 +264,72 @@ function changeQty(itemId, delta) {
   renderSummary();
 }
 
+/* ---------------- Bundle pricing (mirrors Code.gs so the on-screen total
+ * matches exactly what gets saved to the sheet) ---------------- */
+function calcBundleTotal(qty, singlePrice, bundlePrice) {
+  if (!bundlePrice) return qty * singlePrice;
+  const bundles = Math.floor(qty / 3);
+  const rem = qty % 3;
+  return bundles * bundlePrice + rem * singlePrice;
+}
+
+function calcLineTotals(items, invById) {
+  const groups = {}; // key -> { qty, indices, singlePrice, bundlePrice }
+
+  items.forEach((it, idx) => {
+    const inv = invById[String(it.item_id)] || {};
+    const singlePrice = Number(it.price || 0);
+    const bundleGroup = inv.bundle_group ? String(inv.bundle_group) : '';
+    const bundlePrice = bundleGroup ? Number(inv.bundle_price || 0) : 0;
+    const key = bundleGroup || ('__single__' + it.item_id);
+
+    if (!groups[key]) groups[key] = { qty: 0, indices: [], singlePrice, bundlePrice };
+    groups[key].qty += Number(it.qty || 0);
+    groups[key].indices.push(idx);
+  });
+
+  const lineTotals = new Array(items.length).fill(0);
+
+  Object.keys(groups).forEach(key => {
+    const g = groups[key];
+    const groupTotal = calcBundleTotal(g.qty, g.singlePrice, g.bundlePrice);
+    let allocated = 0;
+    g.indices.forEach((idx, i) => {
+      const qty = Number(items[idx].qty || 0);
+      let lt;
+      if (i === g.indices.length - 1) {
+        lt = Number((groupTotal - allocated).toFixed(2));
+      } else {
+        lt = Number(((groupTotal * qty) / g.qty).toFixed(2));
+        allocated += lt;
+      }
+      lineTotals[idx] = lt;
+    });
+  });
+
+  return lineTotals;
+}
+
 function renderSummary() {
   const linesEl = document.getElementById('summary-lines');
   const items = Object.values(state.cart);
 
   if (items.length === 0) {
     linesEl.innerHTML = '<div class="summary-empty">ยังไม่ได้เลือกสินค้า</div>';
-  } else {
-    linesEl.innerHTML = items.map(it => `
-      <div class="summary-line">
-        <span class="summary-line-name">${it.item_name} x${it.qty}</span>
-        <span class="summary-line-amt">${it.price * it.qty}.-</span>
-      </div>
-    `).join('');
+    document.getElementById('summary-total').textContent = 0;
+    return;
   }
 
-  const total = items.reduce((s, it) => s + it.price * it.qty, 0);
+  const lineTotals = calcLineTotals(items, state.invById);
+
+  linesEl.innerHTML = items.map((it, i) => `
+    <div class="summary-line">
+      <span class="summary-line-name">${it.item_name} x${it.qty}</span>
+      <span class="summary-line-amt">${lineTotals[i]}.-</span>
+    </div>
+  `).join('');
+
+  const total = lineTotals.reduce((s, v) => s + v, 0);
   document.getElementById('summary-total').textContent = total;
 }
 
@@ -278,6 +402,22 @@ async function submitOrder() {
 /* ---------------- Event bindings ---------------- */
 function bindEvents() {
   document.getElementById('btn-confirm-name').addEventListener('click', confirmNewUser);
+
+  // avatar picker inside the "new user" welcome modal
+  document.getElementById('avatar-picker-new').addEventListener('click', () => {
+    document.getElementById('input-avatar-new').click();
+  });
+  document.getElementById('input-avatar-new').addEventListener('change', (e) => {
+    handleNewAvatarChosen(e.target.files[0]);
+  });
+
+  // tap the profile avatar on the store-picker page anytime to change it
+  document.getElementById('profile-avatar').addEventListener('click', () => {
+    document.getElementById('input-avatar-existing').click();
+  });
+  document.getElementById('input-avatar-existing').addEventListener('change', (e) => {
+    handleExistingAvatarChosen(e.target.files[0]);
+  });
 
   document.getElementById('btn-back').addEventListener('click', () => showPage('page-login'));
 

@@ -24,7 +24,10 @@
 <!-- ================= PAGE A: PROFILE + STORE PICKER ================= -->
 <section id="page-login" class="page active">
   <div class="profile-card">
-    <div class="avatar"></div>
+    <div class="avatar" id="profile-avatar" title="แตะเพื่อเปลี่ยนรูปโปรไฟล์">
+      <span class="avatar-edit-badge">📷</span>
+    </div>
+    <input id="input-avatar-existing" type="file" accept="image/*" hidden>
     <div class="profile-info">
       <div><span class="label">User ID :</span></div>
       <div><span class="label">Name :</span> <span id="profile-name">-</span></div>
@@ -81,6 +84,15 @@
   <div class="modal-box">
     <div class="modal-title">ยินดีต้อนรับ</div>
     <div class="modal-sub">กรอกชื่อของคุณเพื่อเริ่มใช้งาน</div>
+
+    <div class="avatar-picker" id="avatar-picker-new">
+      <div class="avatar" id="new-avatar-preview">
+        <span class="avatar-edit-badge">📷</span>
+      </div>
+      <div class="avatar-picker-hint">แตะเพื่อเลือกรูปโปรไฟล์ (ไม่บังคับ)</div>
+    </div>
+    <input id="input-avatar-new" type="file" accept="image/*" hidden>
+
     <input id="input-username" class="text-input" type="text" placeholder="ชื่อของคุณ">
     <button id="btn-confirm-name" class="btn-save">เริ่มใช้งาน</button>
   </div>

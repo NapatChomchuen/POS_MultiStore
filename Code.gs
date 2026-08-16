@@ -215,7 +215,31 @@ function saveAvatar_(clientId, base64Data, mimeType) {
 
   const file = folder.createFile(blob);
   file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-  return 'https://drive.google.com/thumbnail?id=' + file.getId() + '&sz=w300';
+
+  // NOTE: drive.google.com/thumbnail?id=... often fails to render when hotlinked
+  // as an <img> from an outside website (Google blocks/breaks it inconsistently).
+  // lh3.googleusercontent.com/d/<id> is the reliable format for public Drive images.
+  return 'https://lh3.googleusercontent.com/d/' + file.getId();
+}
+
+/** ================== ONE-TIME MIGRATION (only needed if avatars were saved
+ *  using the old, unreliable drive.google.com/thumbnail URL format) ================== */
+function migrateAvatarUrls() {
+  const ss = getSS_();
+  const sh = ss.getSheetByName(SHEET_USERS);
+  const values = sh.getDataRange().getValues();
+  const headers = values[0];
+  const avatarCol = headers.indexOf('avatar_url');
+  if (avatarCol === -1) return;
+
+  for (let r = 1; r < values.length; r++) {
+    const url = String(values[r][avatarCol] || '');
+    const match = url.match(/thumbnail\?id=([^&]+)/);
+    if (match) {
+      sh.getRange(r + 1, avatarCol + 1).setValue('https://lh3.googleusercontent.com/d/' + match[1]);
+    }
+  }
+  SpreadsheetApp.flush();
 }
 
 /** ================== BUNDLE PRICING ==================

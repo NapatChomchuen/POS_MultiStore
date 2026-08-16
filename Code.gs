@@ -161,6 +161,61 @@ function addColumnIfMissing_(sh, headerName) {
   }
 }
 
+/** ================== ONE-TIME REPAIR (only needed if the Users sheet's
+ *  columns got out of sync — e.g. `addColumnIfMissing_` added a header past a
+ *  blank leftover column, so the header text and the actual data ended up in
+ *  different columns). Rebuilds the sheet with clean, correctly-matched
+ *  columns: client_id, name, permission, created_at, last_seen, avatar_url.
+ *  It finds avatar photo data by content (a data: URI or a Drive link) even
+ *  if its header text is missing/blank, so no data gets lost. Safe to run
+ *  more than once. */
+function fixUsersSheet() {
+  const ss = getSS_();
+  const sh = ss.getSheetByName(SHEET_USERS);
+  const values = sh.getDataRange().getValues();
+  if (values.length === 0) return;
+
+  const oldHeaders = values[0];
+  const col_ = (name) => oldHeaders.indexOf(name);
+
+  let avatarColIdx = col_('avatar_url');
+  if (avatarColIdx === -1) {
+    // header text is missing/blank somewhere - find the column that actually
+    // holds avatar-looking data instead
+    outer:
+    for (let c = 0; c < oldHeaders.length; c++) {
+      for (let r = 1; r < values.length; r++) {
+        const v = String(values[r][c] || '');
+        if (v.indexOf('data:') === 0 || v.indexOf('drive.google.com') !== -1 || v.indexOf('googleusercontent.com') !== -1) {
+          avatarColIdx = c;
+          break outer;
+        }
+      }
+    }
+  }
+
+  const newHeaders = ['client_id', 'name', 'permission', 'created_at', 'last_seen', 'avatar_url'];
+  const idx = {
+    client_id: col_('client_id'), name: col_('name'), permission: col_('permission'),
+    created_at: col_('created_at'), last_seen: col_('last_seen'),
+  };
+
+  const newRows = values.slice(1).map(row => [
+    idx.client_id > -1 ? row[idx.client_id] : '',
+    idx.name > -1 ? row[idx.name] : '',
+    idx.permission > -1 ? row[idx.permission] : '',
+    idx.created_at > -1 ? row[idx.created_at] : '',
+    idx.last_seen > -1 ? row[idx.last_seen] : '',
+    avatarColIdx > -1 ? row[avatarColIdx] : '',
+  ]);
+
+  sh.clear();
+  sh.getRange(1, 1, 1, newHeaders.length).setValues([newHeaders]);
+  if (newRows.length) sh.getRange(2, 1, newRows.length, newHeaders.length).setValues(newRows);
+  sh.setFrozenRows(1);
+  SpreadsheetApp.flush();
+}
+
 function ensureSheet_(ss, name, headers, seedRows) {
   let sh = ss.getSheetByName(name);
   if (!sh) sh = ss.insertSheet(name);
@@ -341,6 +396,7 @@ function doPost(e) {
 
     if (action === 'registerUser') {
       const sh = ss.getSheetByName(SHEET_USERS);
+      const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
       const users = sheetToObjects_(sh);
       let user = users.find(u => u.client_id === body.client_id);
 
@@ -350,14 +406,17 @@ function doPost(e) {
       }
 
       if (!user) {
-        sh.appendRow([
-          body.client_id,
-          body.name || 'ผู้ใช้งาน',
-          body.permission || 'Staff',
-          nowIso_(),
-          nowIso_(),
-          avatarUrl || '',
-        ]);
+        // build the row by header name (not by hardcoded position), so this
+        // still works correctly no matter what order the columns are in
+        const row = headers.map(h => {
+          if (h === 'client_id') return body.client_id;
+          if (h === 'name') return body.name || 'ผู้ใช้งาน';
+          if (h === 'permission') return body.permission || 'Staff';
+          if (h === 'created_at' || h === 'last_seen') return nowIso_();
+          if (h === 'avatar_url') return avatarUrl || '';
+          return '';
+        });
+        sh.appendRow(row);
         user = {
           client_id: body.client_id,
           name: body.name || 'ผู้ใช้งาน',
@@ -365,12 +424,15 @@ function doPost(e) {
           avatar_url: avatarUrl || '',
         };
       } else {
-        // touch last_seen (+ update avatar if a new one was uploaded)
         const rowIdx = users.findIndex(u => u.client_id === body.client_id) + 2;
-        sh.getRange(rowIdx, 5).setValue(nowIso_());
+        const lastSeenCol = headers.indexOf('last_seen') + 1;
+        if (lastSeenCol > 0) sh.getRange(rowIdx, lastSeenCol).setValue(nowIso_());
         if (body.avatar_base64) {
-          sh.getRange(rowIdx, 6).setValue(avatarUrl);
-          user.avatar_url = avatarUrl;
+          const avatarCol = headers.indexOf('avatar_url') + 1;
+          if (avatarCol > 0) {
+            sh.getRange(rowIdx, avatarCol).setValue(avatarUrl);
+            user.avatar_url = avatarUrl;
+          }
         }
       }
       return jsonOut_({ ok: true, user });

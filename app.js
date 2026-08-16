@@ -187,7 +187,7 @@ function renderStoreGrid() {
     const tile = document.createElement('button');
     tile.className = 'store-tile';
     const logoStyle = store.logo_url
-      ? `background-image:url("${store.logo_url}")`
+      ? `background-image:url('${store.logo_url}')`
       : `background:${store.color || '#8B7FD6'}`;
     tile.innerHTML = `
       <div class="store-logo" style="${logoStyle}">${store.logo_url ? '' : (store.logo_emoji || '')}</div>

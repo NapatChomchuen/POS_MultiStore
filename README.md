@@ -3,7 +3,7 @@
 โปรเจ็คนี้แยกจากระบบ POS_Water_Database เดิมทั้งหมด — ไฟล์ใหม่, Google Sheet ใหม่, ไม่แตะไฟล์เก่าใดๆ
 
 **Google Sheet ใหม่:** `POS_MultiStore_Database`
-https://docs.google.com/spreadsheets/d/1S2AXBIOSbLNGOUU3kD23H6j-ZP0ttsou8kDkSOkuFcA/edit
+https://docs.google.com/spreadsheets/d/xxxxxxxxxxxx
 
 ## โครงสร้างไฟล์
 

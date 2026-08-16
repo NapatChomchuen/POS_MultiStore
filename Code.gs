@@ -245,8 +245,12 @@ function jsonOut_(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }
 
+// new Date().toISOString() always returns UTC time (the trailing "Z"), which
+// is 7 hours behind Thailand — that's why timestamps in the sheet looked
+// "wrong". This formats using the Asia/Bangkok timezone instead so what's
+// written matches the real local time.
 function nowIso_() {
-  return new Date().toISOString();
+  return Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss');
 }
 
 /** ================== AVATAR STORAGE ==================

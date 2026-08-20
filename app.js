@@ -82,7 +82,37 @@ async function init() {
   }
 
   loadStores();
+  loadCourierEarnings();
   bindEvents();
+}
+
+/* ---------------- Courier commission summary (shop_a only) ----------------
+ * Purely additive/read-only: a separate API call + a separate DOM section,
+ * doesn't touch the store-picker or order-entry flow at all. If the call
+ * fails for any reason the panel just silently stays hidden. */
+async function loadCourierEarnings() {
+  try {
+    const { earnings } = await apiGet('getCourierEarnings');
+    renderCourierEarnings(earnings || []);
+  } catch (err) {
+    console.warn('courier earnings unavailable', err);
+  }
+}
+
+function renderCourierEarnings(earnings) {
+  const panel = document.getElementById('courier-earnings');
+  const linesEl = document.getElementById('courier-earnings-lines');
+  if (!earnings.length) {
+    panel.hidden = true;
+    return;
+  }
+  linesEl.innerHTML = earnings.map(e => `
+    <div class="courier-earnings-line">
+      <span class="courier-earnings-name">${e.courier}</span>
+      <span class="courier-earnings-amt">${e.total.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท</span>
+    </div>
+  `).join('');
+  panel.hidden = false;
 }
 
 function renderProfile() {

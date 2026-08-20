@@ -16,11 +16,15 @@
  *     - Who has access: Anyone
  *  5. Copy the Web app URL and paste it into GAS_URL in app.js.
  *
- *  UPDATING AN EXISTING SHEET (bundle pricing added later):
- *  If your Inventory tab already existed before the bundle_group/bundle_price
- *  columns were added, run `migrateBundlePricing` once (function dropdown ->
- *  migrateBundlePricing -> Run) to add the columns and tag the Ammarit single
- *  items automatically, instead of re-running `setup`.
+ *  UPDATING AN EXISTING SHEET (features added after your first setup):
+ *  Run these once each, from the function dropdown, instead of re-running
+ *  `setup` (which only touches brand-new sheets):
+ *    - `migrateBundlePricing`  — adds bundle_group/bundle_price to Inventory
+ *    - `migrateImageColumns`   — adds logo_url/avatar_url/image_url columns
+ *    - `migrateCostPrices`     — adds cost_price to Inventory (courier commission)
+ *    - `migrateAvatarUrls`     — re-saves old-format avatar photos as data URIs
+ *    - `fixUsersSheet`         — repairs the Users sheet if columns ever get
+ *                                 out of sync with their headers
  * =================================================================== */
 
 const SS_ID = '1S2AXBIOSbLNGOUU3kD23H6j-ZP0ttsou8kDkSOkuFcA'; // POS_MultiStore_Database
@@ -65,21 +69,24 @@ function setup() {
   // blank for items that don't have a bundle promo.
   // image_url: relative/absolute path to a product photo (e.g. "images/products/ammarit600.png").
   // Leave blank to keep showing the plain colored box as before.
+  // cost_price: what the shop pays per pack — used only for the courier commission
+  // panel (see getCourierEarnings_ / doGet action=getCourierEarnings). Leave blank
+  // for items where cost isn't tracked; they're simply skipped in that calculation.
   ensureSheet_(ss, SHEET_INVENTORY, [
-    'store_id', 'item_id', 'item_name', 'price', 'sort_order', 'active', 'bundle_group', 'bundle_price', 'image_url',
+    'store_id', 'item_id', 'item_name', 'price', 'sort_order', 'active', 'bundle_group', 'bundle_price', 'image_url', 'cost_price',
   ], [
-    ['shop_a', 'a1', 'Ammarit 600ml x3', 110, 1, true, '', '', ''],
-    ['shop_a', 'a2', 'Ammarit 1500ml x3', 110, 2, true, '', '', ''],
-    ['shop_a', 'a3', 'Ammarit 600ml', 40, 3, true, 'ammarit_single', 110, ''],
-    ['shop_a', 'a4', 'Ammarit 1500ml', 40, 4, true, 'ammarit_single', 110, ''],
-    ['shop_a', 'a5', 'Crystal 600ml', 55, 5, true, '', '', ''],
-    ['shop_a', 'a6', 'Crystal 1500ml', 55, 6, true, '', '', ''],
-    ['shop_a', 'a7', 'Singha 600ml', 55, 7, true, '', '', ''],
-    ['shop_a', 'a8', 'Singha 1500ml', 55, 8, true, '', '', ''],
-    ['shop_a', 'a9', 'Ammarit 300ml', 40, 9, true, 'ammarit_single', 110, ''],
-    ['shop_b', 'b1', 'นาแบะเล็ก', 59, 1, true, '', '', ''],
-    ['shop_b', 'b2', 'นาแบะใหญ่', 79, 2, true, '', '', ''],
-    ['shop_b', 'b3', 'ข้าว', 10, 3, true, '', '', ''],
+    ['shop_a', 'a1', 'Ammarit 600ml x3', 110, 1, true, '', '', '', 75],
+    ['shop_a', 'a2', 'Ammarit 1500ml x3', 110, 2, true, '', '', '', 75],
+    ['shop_a', 'a3', 'Ammarit 600ml', 40, 3, true, 'ammarit_single', 110, '', 25],
+    ['shop_a', 'a4', 'Ammarit 1500ml', 40, 4, true, 'ammarit_single', 110, '', 25],
+    ['shop_a', 'a5', 'Crystal 600ml', 55, 5, true, '', '', '', 43.0588],
+    ['shop_a', 'a6', 'Crystal 1500ml', 55, 6, true, '', '', '', 43.0588],
+    ['shop_a', 'a7', 'Singha 600ml', 55, 7, true, '', '', '', ''],
+    ['shop_a', 'a8', 'Singha 1500ml', 55, 8, true, '', '', '', ''],
+    ['shop_a', 'a9', 'Ammarit 300ml', 40, 9, true, 'ammarit_single', 110, '', 25],
+    ['shop_b', 'b1', 'นาแบะเล็ก', 59, 1, true, '', '', '', ''],
+    ['shop_b', 'b2', 'นาแบะใหญ่', 79, 2, true, '', '', '', ''],
+    ['shop_b', 'b3', 'ข้าว', 10, 3, true, '', '', '', ''],
   ]);
 
   ensureSheet_(ss, SHEET_COURIERS, ['courier_id', 'name', 'active'], [
@@ -151,6 +158,37 @@ function migrateImageColumns() {
   addColumnIfMissing_(ss.getSheetByName(SHEET_STORES), 'logo_url');
   addColumnIfMissing_(ss.getSheetByName(SHEET_USERS), 'avatar_url');
   addColumnIfMissing_(ss.getSheetByName(SHEET_INVENTORY), 'image_url');
+  SpreadsheetApp.flush();
+}
+
+/** ================== ONE-TIME MIGRATION (only needed if Inventory already
+ *  existed before cost_price was added) — adds the column if missing and fills
+ *  in the known cost for Ammarit/Crystal items (used by the courier commission
+ *  panel). Items without a known cost (e.g. Singha) are left blank on purpose
+ *  and are simply skipped in the commission calculation. Safe to re-run. */
+function migrateCostPrices() {
+  const ss = getSS_();
+  const sh = ss.getSheetByName(SHEET_INVENTORY);
+  addColumnIfMissing_(sh, 'cost_price');
+
+  const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  const itemIdCol = headers.indexOf('item_id') + 1;
+  const costCol = headers.indexOf('cost_price') + 1;
+  if (itemIdCol === 0 || costCol === 0 || sh.getLastRow() < 2) return;
+
+  const KNOWN_COSTS = {
+    a1: 75, a2: 75,       // Ammarit 600ml/1500ml x3 pack (3 x 25)
+    a3: 25, a4: 25, a9: 25, // Ammarit 600ml/1500ml/300ml single
+    a5: 43.0588, a6: 43.0588, // Crystal 600ml/1500ml
+  };
+
+  const itemIds = sh.getRange(2, itemIdCol, sh.getLastRow() - 1, 1).getValues();
+  itemIds.forEach((row, i) => {
+    const itemId = row[0];
+    if (KNOWN_COSTS.hasOwnProperty(itemId)) {
+      sh.getRange(i + 2, costCol).setValue(KNOWN_COSTS[itemId]);
+    }
+  });
   SpreadsheetApp.flush();
 }
 
@@ -354,6 +392,58 @@ function calcLineTotals_(items, invById) {
   return lineTotals;
 }
 
+/** ================== COURIER COMMISSION (shop_a only) ==================
+ *  The courier gets 57% of the profit margin (sale price minus cost_price)
+ *  on every line item they delivered, summed across all orders in
+ *  Orders_shop_a and grouped by courier name. Uses each order's already-saved
+ *  line_total (which already reflects Ammarit bundle pricing), so this always
+ *  matches what was actually charged — never recalculated from scratch.
+ *  Items with no cost_price set in Inventory (e.g. Singha) are skipped, not
+ *  treated as zero-cost, so they don't inflate the commission. */
+const COURIER_COMMISSION_RATE = 0.57;
+
+function computeCourierEarnings_(ss) {
+  const ordersSh = ss.getSheetByName(ORDERS_PREFIX + 'shop_a');
+  if (!ordersSh) return [];
+
+  const costById = {};
+  sheetToObjects_(ss.getSheetByName(SHEET_INVENTORY)).forEach(r => {
+    if (r.cost_price !== '' && r.cost_price !== null && r.cost_price !== undefined) {
+      costById[String(r.item_id)] = Number(r.cost_price);
+    }
+  });
+
+  const totals = {}; // courier name -> total commission (baht)
+
+  sheetToObjects_(ordersSh).forEach(order => {
+    const courier = String(order.courier || '').trim();
+    if (!courier) return;
+
+    let items;
+    try {
+      items = JSON.parse(order.items_json || '[]');
+    } catch (err) {
+      return; // malformed row - skip rather than fail the whole report
+    }
+
+    let orderCommission = 0;
+    items.forEach(it => {
+      const cost = costById[String(it.item_id)];
+      if (cost === undefined) return; // unknown cost - skip this line entirely
+      const qty = Number(it.qty || 0);
+      const lineTotal = it.line_total !== undefined ? Number(it.line_total) : Number(it.price || 0) * qty;
+      const margin = lineTotal - cost * qty;
+      orderCommission += margin * COURIER_COMMISSION_RATE;
+    });
+
+    totals[courier] = (totals[courier] || 0) + orderCommission;
+  });
+
+  return Object.keys(totals)
+    .map(name => ({ courier: name, total: Number(totals[name].toFixed(2)) }))
+    .sort((a, b) => b.total - a.total);
+}
+
 /** ================== GET (read-only queries) ================== */
 function doGet(e) {
   const action = e.parameter.action;
@@ -383,6 +473,10 @@ function doGet(e) {
       const users = sheetToObjects_(ss.getSheetByName(SHEET_USERS));
       const user = users.find(u => u.client_id === clientId);
       return jsonOut_({ ok: true, user: user || null });
+    }
+
+    if (action === 'getCourierEarnings') {
+      return jsonOut_({ ok: true, earnings: computeCourierEarnings_(ss) });
     }
 
     return jsonOut_({ ok: false, error: 'unknown action' });

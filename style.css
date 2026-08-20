@@ -87,6 +87,32 @@ html, body {
   border-radius: 2px;
 }
 
+.courier-earnings {
+  margin-top: 16px;
+  padding: 12px 14px;
+  background: #F7F6FD;
+  border: 1px solid #E7E4F9;
+  border-radius: 12px;
+}
+.courier-earnings-title {
+  font-weight: 800;
+  font-size: 12.5px;
+  color: var(--purple-dark);
+  margin-bottom: 6px;
+}
+.courier-earnings-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.courier-earnings-line {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+}
+.courier-earnings-name { font-weight: 700; }
+.courier-earnings-amt { color: var(--muted); }
+
 .store-grid {
   display: flex;
   gap: 24px;

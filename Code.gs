@@ -22,6 +22,7 @@
  *    - `migrateBundlePricing`  — adds bundle_group/bundle_price to Inventory
  *    - `migrateImageColumns`   — adds logo_url/avatar_url/image_url columns
  *    - `migrateCostPrices`     — adds cost_price to Inventory (courier commission)
+ *    - `migrateCommissionPaidColumn` — adds commission_paid to existing Orders_* tabs
  *    - `migrateAvatarUrls`     — re-saves old-format avatar photos as data URIs
  *    - `fixUsersSheet`         — repairs the Users sheet if columns ever get
  *                                 out of sync with their headers
@@ -37,6 +38,7 @@ const ORDERS_PREFIX = 'Orders_'; // each store gets its own tab: Orders_<store_i
 const ORDERS_HEADERS = [
   'order_id', 'timestamp', 'store_id', 'client_id', 'user_name',
   'items_json', 'item_summary', 'total', 'courier', 'status',
+  'commission_paid', // TRUE once the owner has paid out this order's courier commission
 ];
 
 function getSS_() {
@@ -192,6 +194,20 @@ function migrateCostPrices() {
   SpreadsheetApp.flush();
 }
 
+/** ================== ONE-TIME MIGRATION (only needed if an Orders_<store>
+ *  tab already existed before commission_paid was added) — adds the column to
+ *  every existing Orders_* tab. New tabs created after this point already get
+ *  it automatically via ORDERS_HEADERS. Safe to re-run. */
+function migrateCommissionPaidColumn() {
+  const ss = getSS_();
+  ss.getSheets().forEach(sh => {
+    if (sh.getName().indexOf(ORDERS_PREFIX) === 0) {
+      addColumnIfMissing_(sh, 'commission_paid');
+    }
+  });
+  SpreadsheetApp.flush();
+}
+
 function addColumnIfMissing_(sh, headerName) {
   const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
   if (headers.indexOf(headerName) === -1) {
@@ -289,6 +305,12 @@ function jsonOut_(obj) {
 // written matches the real local time.
 function nowIso_() {
   return Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss');
+}
+
+// Sheets can hand back a checkbox column as a real boolean or, if someone typed
+// it in by hand, as the text "TRUE" - treat either as true.
+function isTrue_(v) {
+  return v === true || String(v).trim().toUpperCase() === 'TRUE';
 }
 
 /** ================== AVATAR STORAGE ==================
@@ -399,7 +421,12 @@ function calcLineTotals_(items, invById) {
  *  line_total (which already reflects Ammarit bundle pricing), so this always
  *  matches what was actually charged — never recalculated from scratch.
  *  Items with no cost_price set in Inventory (e.g. Singha) are skipped, not
- *  treated as zero-cost, so they don't inflate the commission. */
+ *  treated as zero-cost, so they don't inflate the commission.
+ *
+ *  Orders already marked commission_paid=TRUE are excluded, so this always
+ *  shows the amount still OWED since the last payout — see resetCourierEarnings
+ *  (doPost) for how the owner marks a courier as "paid" once they've paid them
+ *  in person. Nothing is ever deleted, so full order history stays intact. */
 const COURIER_COMMISSION_RATE = 0.57;
 
 function computeCourierEarnings_(ss) {
@@ -413,9 +440,10 @@ function computeCourierEarnings_(ss) {
     }
   });
 
-  const totals = {}; // courier name -> total commission (baht)
+  const totals = {}; // courier name -> total unpaid commission (baht)
 
   sheetToObjects_(ordersSh).forEach(order => {
+    if (isTrue_(order.commission_paid)) return; // already paid out - excluded from the running total
     const courier = String(order.courier || '').trim();
     if (!courier) return;
 
@@ -534,6 +562,36 @@ function doPost(e) {
         }
       }
       return jsonOut_({ ok: true, user });
+    }
+
+    if (action === 'resetCourierEarnings') {
+      // marks every currently-unpaid shop_a order for this courier as
+      // commission_paid=TRUE - use this once you've actually paid them out in
+      // person. Nothing is deleted; the order rows (and their real revenue
+      // total) stay in Orders_shop_a forever for your records. The running
+      // "รายได้คนส่ง" total simply drops back to 0 for that courier and starts
+      // accumulating again from their next delivery.
+      const ordersSh = ss.getSheetByName(ORDERS_PREFIX + 'shop_a');
+      if (!ordersSh) return jsonOut_({ ok: false, error: 'ยังไม่มีออเดอร์ของร้านนี้' });
+
+      const headers = ordersSh.getRange(1, 1, 1, ordersSh.getLastColumn()).getValues()[0];
+      const courierCol = headers.indexOf('courier');
+      const paidCol = headers.indexOf('commission_paid');
+      if (courierCol === -1 || paidCol === -1) {
+        return jsonOut_({ ok: false, error: 'ไม่พบคอลัมน์ commission_paid - รันฟังก์ชัน migrateCommissionPaidColumn ใน Apps Script ก่อน' });
+      }
+
+      const lastRow = ordersSh.getLastRow();
+      if (lastRow >= 2) {
+        const data = ordersSh.getRange(2, 1, lastRow - 1, headers.length).getValues();
+        data.forEach((row, i) => {
+          const rowCourier = String(row[courierCol] || '').trim();
+          if (rowCourier === String(body.courier || '').trim() && !isTrue_(row[paidCol])) {
+            ordersSh.getRange(i + 2, paidCol + 1).setValue(true);
+          }
+        });
+      }
+      return jsonOut_({ ok: true });
     }
 
     if (action === 'submitOrder') {

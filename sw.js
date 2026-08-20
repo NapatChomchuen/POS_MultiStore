@@ -8,7 +8,7 @@
 // browser never re-installs it and keeps serving the OLD cached app shell
 // forever, no matter how many times you edit app.js on the server or hard-
 // refresh the page.
-const CACHE_NAME = 'pos-multistore-v4';
+const CACHE_NAME = 'pos-multistore-v5';
 const APP_SHELL = [
   './',
   './index.html',

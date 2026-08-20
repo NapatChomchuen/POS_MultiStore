@@ -110,9 +110,28 @@ function renderCourierEarnings(earnings) {
     <div class="courier-earnings-line">
       <span class="courier-earnings-name">${e.courier}</span>
       <span class="courier-earnings-amt">${e.total.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท</span>
+      <button class="courier-reset-btn" data-courier="${e.courier}">จ่ายแล้ว/รีเซ็ต</button>
     </div>
   `).join('');
   panel.hidden = false;
+}
+
+async function resetCourierEarnings(courierName) {
+  const ok = confirm(`ยืนยันว่าจ่ายค่าส่งให้ "${courierName}" แล้ว?\nยอดคงเหลือของคนส่งคนนี้จะรีเซ็ตเป็น 0.- (ออเดอร์เก่ายังอยู่ในชีตครบ ไม่มีอะไรถูกลบ)`);
+  if (!ok) return;
+
+  try {
+    const res = await apiPost('resetCourierEarnings', { courier: courierName });
+    if (res.ok) {
+      showToast(`รีเซ็ตยอดของ ${courierName} แล้ว`);
+      loadCourierEarnings();
+    } else {
+      showToast('รีเซ็ตไม่สำเร็จ: ' + res.error);
+    }
+  } catch (err) {
+    showToast('รีเซ็ตไม่สำเร็จ ตรวจสอบการเชื่อมต่อ');
+    console.error(err);
+  }
 }
 
 function renderProfile() {
@@ -436,6 +455,13 @@ async function submitOrder() {
 function bindEvents() {
   document.getElementById('btn-confirm-name').addEventListener('click', confirmNewUser);
 
+  // courier earnings panel - "จ่ายแล้ว/รีเซ็ต" buttons (delegated since the
+  // panel's content is re-rendered each time earnings load)
+  document.getElementById('courier-earnings-lines').addEventListener('click', (e) => {
+    const btn = e.target.closest('.courier-reset-btn');
+    if (btn) resetCourierEarnings(btn.dataset.courier);
+  });
+
   // avatar picker inside the "new user" welcome modal
   document.getElementById('avatar-picker-new').addEventListener('click', () => {
     document.getElementById('input-avatar-new').click();
@@ -479,5 +505,17 @@ document.addEventListener('DOMContentLoaded', init);
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('./sw.js').catch((err) => console.warn('SW register failed', err));
+  });
+
+  // Auto-update: whenever a newer sw.js finishes installing, it takes control
+  // (skipWaiting + clients.claim in sw.js) and fires "controllerchange" here.
+  // Reloading at that point picks up the new app.js/index.html/style.css
+  // automatically — so an installed/bookmarked icon updates itself the next
+  // time it's opened, without anyone having to delete and reinstall it.
+  let swRefreshedOnce = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (swRefreshedOnce) return;
+    swRefreshedOnce = true;
+    window.location.reload();
   });
 }

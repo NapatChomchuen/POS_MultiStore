@@ -103,15 +103,28 @@ html, body {
 .courier-earnings-lines {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 .courier-earnings-line {
   display: flex;
-  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
   font-size: 13px;
 }
 .courier-earnings-name { font-weight: 700; }
-.courier-earnings-amt { color: var(--muted); }
+.courier-earnings-amt { color: var(--muted); flex: 1; text-align: right; }
+.courier-reset-btn {
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--purple-dark);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.courier-reset-btn:active { background: #F1EFFC; }
 
 .store-grid {
   display: flex;

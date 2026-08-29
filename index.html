@@ -57,6 +57,7 @@
   <header class="order-header">
     <button id="btn-back" class="btn-back">←</button>
     <div class="order-store-name" id="order-store-name">ร้านค้า</div>
+    <button id="btn-history" class="btn-history" title="ประวัติออเดอร์">🧾 ประวัติ</button>
     <div class="order-user-name" id="order-user-name"></div>
   </header>
 
@@ -76,6 +77,39 @@
 
   <button id="btn-save-order" class="btn-save">บันทึกส่งออเดอร์</button>
 </section>
+
+<!-- ================= PAGE C: ORDER HISTORY ================= -->
+<section id="page-history" class="page">
+  <header class="order-header">
+    <button id="btn-history-back" class="btn-back">←</button>
+    <div class="order-store-name" id="history-store-name">ประวัติออเดอร์</div>
+    <button id="btn-history-refresh" class="btn-history" title="โหลดใหม่">⟳</button>
+  </header>
+
+  <div class="history-toggle">
+    <button class="history-tab active" data-scope="all">ทั้งหมด</button>
+    <button class="history-tab" data-scope="mine">ของฉัน</button>
+  </div>
+
+  <div class="history-stats" id="history-stats"></div>
+
+  <div class="history-list" id="history-list">
+    <div class="history-empty">กำลังโหลด...</div>
+  </div>
+</section>
+
+<!-- ================= MODAL: SAVE RESULT ================= -->
+<div id="modal-result" class="modal-overlay">
+  <div class="modal-box">
+    <div class="result-icon" id="result-icon">✓</div>
+    <div class="modal-title" id="result-title">บันทึกออเดอร์สำเร็จ</div>
+    <div class="modal-sub" id="result-sub"></div>
+    <div class="result-detail" id="result-detail"></div>
+    <button id="btn-result-history" class="btn-outline">ดูประวัติออเดอร์</button>
+    <button id="btn-result-retry" class="btn-save" hidden>ลองบันทึกอีกครั้ง</button>
+    <button id="btn-result-close" class="btn-cancel">ปิด</button>
+  </div>
+</div>
 
 <!-- ================= MODAL: PICK COURIER ================= -->
 <div id="modal-courier" class="modal-overlay">

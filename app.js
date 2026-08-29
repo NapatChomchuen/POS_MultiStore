@@ -15,6 +15,9 @@ const state = {
   invById: {},      // item_id -> inventory row (has bundle_group / bundle_price)
   couriers: [],
   cart: {},          // item_id -> { item_name, price, qty }
+  orders: [],        // order history of the store currently open (newest first)
+  historyScope: 'all', // 'all' = everyone's orders in this store, 'mine' = this device only
+  lastSubmit: null,  // payload of the last save attempt, kept so a failed save can be retried safely
   pendingCourier: null,
   pendingAvatar: null, // { base64, mime } chosen in the "new user" modal, before registering
 };
@@ -424,30 +427,217 @@ async function renderCourierOptions() {
   });
 }
 
-async function submitOrder() {
-  document.getElementById('modal-courier').classList.remove('active');
-  showToast('กำลังบันทึกออเดอร์...');
+/** A one-off id for each save attempt. If the connection drops halfway, the
+ * retry carries the SAME id, and the backend recognises it and reports the
+ * already-saved order instead of writing a second copy. */
+function newClientUid() {
+  return 'U-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
 
-  const items = Object.values(state.cart);
+async function submitOrder(retryPayload) {
+  document.getElementById('modal-courier').classList.remove('active');
+
+  const payload = retryPayload || {
+    store_id: state.currentStore.store_id,
+    client_id: state.clientId,
+    user_name: state.user ? state.user.name : '',
+    items: Object.values(state.cart),
+    courier: state.pendingCourier,
+    client_uid: newClientUid(),
+  };
+  state.lastSubmit = payload;
+
+  const btn = document.getElementById('btn-save-order');
+  const btnLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'กำลังบันทึก...';
+
   try {
-    const res = await apiPost('submitOrder', {
-      store_id: state.currentStore.store_id,
-      client_id: state.clientId,
-      user_name: state.user ? state.user.name : '',
-      items,
-      courier: state.pendingCourier,
-    });
+    const res = await apiPost('submitOrder', payload);
     if (res.ok) {
-      showToast(`บันทึกออเดอร์สำเร็จ (รวม ${res.total} บาท)`);
+      state.lastSubmit = null;
       state.cart = {};
       renderProductGrid();
       renderSummary();
+      loadCourierEarnings();
+      showResultModal(true, res, payload);
     } else {
-      showToast('บันทึกไม่สำเร็จ: ' + res.error);
+      showResultModal(false, res, payload);
     }
   } catch (err) {
-    showToast('บันทึกไม่สำเร็จ ตรวจสอบการเชื่อมต่อ');
     console.error(err);
+    showResultModal(false, { error: 'เชื่อมต่ออินเทอร์เน็ตไม่ได้' }, payload);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = btnLabel;
+  }
+}
+
+/* ---------------- Save result modal ----------------
+ * Replaces the old toast-only feedback: a save is never ambiguous again — it
+ * either shows a green tick with the order id/total that landed in the sheet,
+ * or a red cross with a retry button that re-sends the SAME order (no
+ * duplicate risk, see newClientUid / client_uid in Code.gs). */
+function showResultModal(ok, res, payload) {
+  const modal = document.getElementById('modal-result');
+  const icon = document.getElementById('result-icon');
+  const title = document.getElementById('result-title');
+  const sub = document.getElementById('result-sub');
+  const detail = document.getElementById('result-detail');
+  const retryBtn = document.getElementById('btn-result-retry');
+
+  icon.textContent = ok ? '✓' : '✕';
+  icon.className = 'result-icon ' + (ok ? 'ok' : 'fail');
+  retryBtn.hidden = ok;
+
+  if (ok) {
+    title.textContent = res.duplicate ? 'ออเดอร์นี้บันทึกไว้แล้ว' : 'บันทึกออเดอร์สำเร็จ';
+    sub.textContent = res.duplicate
+      ? 'ระบบตรวจพบว่าออเดอร์เดิมเข้าชีตไปเรียบร้อยแล้ว จึงไม่บันทึกซ้ำ'
+      : 'ข้อมูลเข้า Google Sheet เรียบร้อยแล้ว';
+    detail.innerHTML = `
+      <div class="result-line"><span>ยอดรวม</span><b>${res.total} บาท</b></div>
+      <div class="result-line"><span>คนส่ง</span><b>${escapeHtml(payload.courier || '-')}</b></div>
+      <div class="result-line"><span>เวลา</span><b>${escapeHtml(res.timestamp || nowLocalString())}</b></div>
+      <div class="result-line"><span>เลขที่</span><b>${escapeHtml(String(res.order_id || '-'))}</b></div>
+    `;
+  } else {
+    title.textContent = 'บันทึกไม่สำเร็จ';
+    sub.textContent = 'ออเดอร์ยังไม่เข้าชีต ของในตะกร้ายังอยู่ครบ กดลองอีกครั้งได้เลย';
+    detail.innerHTML = `<div class="result-error">${escapeHtml(String(res.error || 'ไม่ทราบสาเหตุ'))}</div>`;
+  }
+  modal.classList.add('active');
+}
+
+function closeResultModal() {
+  document.getElementById('modal-result').classList.remove('active');
+}
+
+function nowLocalString() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
+/* ================================================================
+ *  ORDER HISTORY (Page C)
+ *  Read-only view of what actually got saved into Orders_<store_id>,
+ *  so there's never a reason to open Google Sheets on the phone just to
+ *  confirm a save. Cancelling an order marks it "ยกเลิก" in the sheet —
+ *  the row is never deleted, and a cancelled order stops counting toward
+ *  the courier commission.
+ * ================================================================ */
+async function openHistory() {
+  if (!state.currentStore) return;
+  document.getElementById('history-store-name').textContent = 'ประวัติ · ' + state.currentStore.name;
+  showPage('page-history');
+  loadOrders();
+}
+
+async function loadOrders() {
+  const listEl = document.getElementById('history-list');
+  listEl.innerHTML = '<div class="history-empty">กำลังโหลด...</div>';
+  document.getElementById('history-stats').innerHTML = '';
+  try {
+    const res = await apiGet('getOrders', { store_id: state.currentStore.store_id, limit: 100 });
+    if (!res.ok) throw new Error(res.error || 'load failed');
+    state.orders = res.orders || [];
+    renderHistory();
+  } catch (err) {
+    console.error(err);
+    listEl.innerHTML = '<div class="history-empty">โหลดประวัติไม่สำเร็จ — ตรวจสอบการเชื่อมต่อแล้วกด ⟳ อีกครั้ง</div>';
+  }
+}
+
+function visibleOrders() {
+  if (state.historyScope === 'mine') {
+    return state.orders.filter(o => String(o.client_id) === String(state.clientId));
+  }
+  return state.orders;
+}
+
+function isVoided(order) {
+  return String(order.status || '').trim() === 'ยกเลิก';
+}
+
+function renderHistory() {
+  const listEl = document.getElementById('history-list');
+  const statsEl = document.getElementById('history-stats');
+  const orders = visibleOrders();
+
+  const today = nowLocalString().slice(0, 10);
+  const todayOrders = orders.filter(o => String(o.timestamp || '').slice(0, 10) === today && !isVoided(o));
+  const todayTotal = todayOrders.reduce((s, o) => s + Number(o.total || 0), 0);
+  statsEl.innerHTML = `
+    <div class="history-stat"><span>ออเดอร์วันนี้</span><b>${todayOrders.length} รายการ</b></div>
+    <div class="history-stat"><span>ยอดรวมวันนี้</span><b>${todayTotal.toLocaleString('th-TH')} บาท</b></div>
+  `;
+
+  if (!orders.length) {
+    listEl.innerHTML = '<div class="history-empty">ยังไม่มีออเดอร์</div>';
+    return;
+  }
+
+  let html = '';
+  let lastDate = '';
+  orders.forEach(o => {
+    const ts = String(o.timestamp || '');
+    const date = ts.slice(0, 10);
+    const time = ts.slice(11, 16);
+    if (date !== lastDate) {
+      lastDate = date;
+      html += `<div class="history-date">${escapeHtml(date === today ? 'วันนี้ · ' + date : date)}</div>`;
+    }
+
+    const voided = isVoided(o);
+    const lines = (o.items || []).map(it => `
+      <div class="history-item-line">
+        <span>${escapeHtml(it.item_name)} x${escapeHtml(String(it.qty))}</span>
+        <span>${escapeHtml(String(it.line_total !== undefined ? it.line_total : (Number(it.price || 0) * Number(it.qty || 0))))}.-</span>
+      </div>`).join('') || '<div class="history-item-line"><span>ไม่มีรายละเอียดสินค้า</span></div>';
+
+    html += `
+      <div class="history-card${voided ? ' voided' : ''}" data-order-id="${escapeHtml(String(o.order_id))}">
+        <div class="history-card-head">
+          <span class="history-time">${escapeHtml(time)}</span>
+          <span class="history-badge${voided ? ' void' : ''}">${escapeHtml(voided ? 'ยกเลิกแล้ว' : 'บันทึกแล้ว')}</span>
+          <span class="history-total">${Number(o.total || 0).toLocaleString('th-TH')}.-</span>
+        </div>
+        <div class="history-meta">${escapeHtml(o.user_name || '-')} · ส่งโดย ${escapeHtml(o.courier || '-')}</div>
+        <div class="history-summary">${escapeHtml(o.item_summary || '')}</div>
+        <div class="history-detail" hidden>
+          ${lines}
+          <div class="history-order-id">เลขที่ ${escapeHtml(String(o.order_id))}</div>
+          ${voided ? '' : `<button class="history-void-btn" data-void="${escapeHtml(String(o.order_id))}">ยกเลิกออเดอร์นี้</button>`}
+        </div>
+      </div>`;
+  });
+
+  listEl.innerHTML = html;
+}
+
+async function voidOrder(orderId) {
+  const ok = confirm('ยืนยันยกเลิกออเดอร์นี้?\nแถวในชีตจะไม่ถูกลบ แต่จะถูกทำเครื่องหมายว่า "ยกเลิก" และไม่ถูกนับเป็นยอดขาย/ค่าส่งอีก');
+  if (!ok) return;
+  showToast('กำลังยกเลิก...');
+  try {
+    const res = await apiPost('voidOrder', { store_id: state.currentStore.store_id, order_id: orderId });
+    if (res.ok) {
+      showToast('ยกเลิกออเดอร์แล้ว');
+      loadOrders();
+      loadCourierEarnings();
+    } else {
+      showToast('ยกเลิกไม่สำเร็จ: ' + res.error);
+    }
+  } catch (err) {
+    console.error(err);
+    showToast('ยกเลิกไม่สำเร็จ ตรวจสอบการเชื่อมต่อ');
   }
 }
 
@@ -491,6 +681,44 @@ function bindEvents() {
     if (box) {
       changeQty(box.dataset.id, 1);
     }
+  });
+
+  // ----- order history -----
+  document.getElementById('btn-history').addEventListener('click', openHistory);
+  document.getElementById('btn-history-back').addEventListener('click', () => showPage('page-order'));
+  document.getElementById('btn-history-refresh').addEventListener('click', loadOrders);
+
+  document.querySelector('.history-toggle').addEventListener('click', (e) => {
+    const tab = e.target.closest('.history-tab');
+    if (!tab) return;
+    state.historyScope = tab.dataset.scope;
+    document.querySelectorAll('.history-tab').forEach(t => t.classList.toggle('active', t === tab));
+    renderHistory();
+  });
+
+  document.getElementById('history-list').addEventListener('click', (e) => {
+    const voidBtn = e.target.closest('.history-void-btn');
+    if (voidBtn) {
+      voidOrder(voidBtn.dataset.void);
+      return;
+    }
+    const card = e.target.closest('.history-card');
+    if (card) {
+      const detail = card.querySelector('.history-detail');
+      detail.hidden = !detail.hidden;
+      card.classList.toggle('open', !detail.hidden);
+    }
+  });
+
+  // ----- save result modal -----
+  document.getElementById('btn-result-close').addEventListener('click', closeResultModal);
+  document.getElementById('btn-result-history').addEventListener('click', () => {
+    closeResultModal();
+    openHistory();
+  });
+  document.getElementById('btn-result-retry').addEventListener('click', () => {
+    closeResultModal();
+    if (state.lastSubmit) submitOrder(state.lastSubmit);
   });
 
   document.getElementById('btn-save-order').addEventListener('click', openCourierModal);

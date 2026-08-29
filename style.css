@@ -377,3 +377,185 @@ html, body {
   opacity: 1;
   transform: translate(-50%, 0);
 }
+
+
+/* ---------- Page C: order history ---------- */
+.btn-history {
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--purple-dark);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 7px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn-history:active { background: #F1EFFC; }
+
+.history-toggle {
+  display: flex;
+  gap: 6px;
+  background: #F3F2F8;
+  padding: 4px;
+  border-radius: 12px;
+  margin-bottom: 12px;
+}
+.history-tab {
+  flex: 1;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted);
+  padding: 8px;
+  border-radius: 9px;
+  cursor: pointer;
+}
+.history-tab.active {
+  background: #fff;
+  color: var(--purple-dark);
+  box-shadow: 0 1px 3px rgba(0,0,0,.08);
+}
+
+.history-stats {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.history-stat {
+  flex: 1;
+  background: #F7F6FD;
+  border: 1px solid #E7E4F9;
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.history-stat span { font-size: 11.5px; color: var(--muted); }
+.history-stat b { font-size: 15px; }
+
+.history-list { display: flex; flex-direction: column; gap: 8px; }
+.history-empty { color: var(--muted); font-size: 13px; text-align: center; padding: 24px 0; }
+.history-date {
+  font-size: 11.5px;
+  font-weight: 800;
+  color: var(--muted);
+  margin: 12px 0 2px;
+}
+
+.history-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 11px 12px;
+  cursor: pointer;
+  background: #fff;
+}
+.history-card.open { border-color: var(--purple); background: #FBFAFF; }
+.history-card.voided { opacity: .55; }
+.history-card.voided .history-summary { text-decoration: line-through; }
+
+.history-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+.history-time { font-weight: 800; font-size: 14px; }
+.history-total { margin-left: auto; font-weight: 800; font-size: 15px; color: var(--green-dark); }
+.history-badge {
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--green-dark);
+  background: #E9F9F0;
+  border-radius: 20px;
+  padding: 2px 8px;
+}
+.history-badge.void { color: #C0392B; background: #FDECEA; }
+
+.history-meta { font-size: 11.5px; color: var(--muted); }
+.history-summary {
+  font-size: 12.5px;
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+.history-detail {
+  border-top: 1px dashed var(--border);
+  margin-top: 9px;
+  padding-top: 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.history-item-line {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12.5px;
+}
+.history-order-id { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.history-void-btn {
+  margin-top: 8px;
+  border: 1px solid #F5C6C0;
+  background: #FDECEA;
+  color: #C0392B;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 800;
+  padding: 9px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.history-void-btn:active { background: #FADBD8; }
+
+/* ---------- Save result modal ---------- */
+.result-icon {
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  margin: 0 auto 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+  font-weight: 800;
+  color: #fff;
+  background: var(--green);
+}
+.result-icon.fail { background: #E74C3C; }
+
+.result-detail {
+  background: #F7F7F9;
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.result-line {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12.5px;
+}
+.result-line span { color: var(--muted); }
+.result-error { font-size: 12.5px; color: #C0392B; word-break: break-word; }
+
+.btn-outline {
+  display: block;
+  width: 100%;
+  background: #fff;
+  color: var(--purple-dark);
+  border: 2px solid var(--purple);
+  border-radius: 10px;
+  padding: 12px;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+  margin-bottom: 8px;
+}
+.btn-outline:active { background: #F1EFFC; }

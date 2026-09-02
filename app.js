@@ -14,11 +14,14 @@ const state = {
   inventory: [],
   invById: {},      // item_id -> inventory row (has bundle_group / bundle_price)
   couriers: [],
+  customers: [],      // customer directory, loaded once per session (see ensureCustomersLoaded)
   cart: {},          // item_id -> { item_name, price, qty }
   orders: [],        // order history of the store currently open (newest first)
   historyScope: 'all', // 'all' = everyone's orders in this store, 'mine' = this device only
   lastSubmit: null,  // payload of the last save attempt, kept so a failed save can be retried safely
   pendingCourier: null,
+  pendingCustomer: null,       // customer row picked from suggestions in the checkout popup, or null
+  pendingCustomerFields: null, // resolved customer_* fields for the order about to be submitted
   pendingAvatar: null, // { base64, mime } chosen in the "new user" modal, before registering
 };
 
@@ -395,8 +398,165 @@ function openCourierModal() {
     showToast('กรุณาเลือกสินค้าก่อน');
     return;
   }
+  resetCustomerSection();
+  ensureCustomersLoaded();
   renderCourierOptions();
   document.getElementById('modal-courier').classList.add('active');
+}
+
+/* ---------------- Customer search (inside the checkout popup) ----------------
+ * Typing a name/phone that matches a row in the Customers sheet auto-fills
+ * address/phone/note (read-only card, "เปลี่ยน" to search again). Typing one
+ * that doesn't match offers an optional "+ เพิ่มที่อยู่/เบอร์โทร/หมายเหตุ" - left
+ * collapsed, this is just a walk-in order with a name and nothing else saved. */
+async function ensureCustomersLoaded() {
+  if (state.customers.length) return;
+  try {
+    const { customers } = await apiGet('getCustomers');
+    state.customers = customers || [];
+  } catch (err) {
+    console.warn('customers unavailable', err);
+  }
+}
+
+function resetCustomerSection() {
+  state.pendingCustomer = null;
+  state.pendingCustomerFields = null;
+
+  const search = document.getElementById('customer-search');
+  search.value = '';
+  search.disabled = false;
+
+  document.getElementById('customer-suggestions').hidden = true;
+  document.getElementById('customer-suggestions').innerHTML = '';
+  document.getElementById('customer-picked-card').hidden = true;
+  document.getElementById('customer-new-hint').hidden = true;
+  document.getElementById('customer-new-fields').hidden = true;
+  document.getElementById('customer-new-phone').value = '';
+  document.getElementById('customer-new-address').value = '';
+  document.getElementById('customer-new-note').value = '';
+  document.getElementById('customer-new-save').checked = true;
+}
+
+function filterCustomers(query) {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  return state.customers.filter(c =>
+    String(c.name || '').toLowerCase().includes(q) ||
+    String(c.phone || '').includes(q)
+  ).slice(0, 8);
+}
+
+function renderCustomerSuggestions() {
+  if (state.pendingCustomer) return; // locked onto a picked customer - typing is disabled anyway
+
+  const search = document.getElementById('customer-search');
+  const wrap = document.getElementById('customer-suggestions');
+  const hint = document.getElementById('customer-new-hint');
+  const query = search.value;
+
+  if (!query.trim()) {
+    wrap.hidden = true;
+    hint.hidden = true;
+    return;
+  }
+
+  const matches = filterCustomers(query);
+  if (matches.length) {
+    wrap.hidden = false;
+    hint.hidden = true;
+    wrap.innerHTML = matches.map(c => `
+      <button type="button" class="customer-suggestion-item">
+        <span class="cs-name">${escapeHtml(c.name)}</span>
+        ${c.phone ? `<span class="cs-phone">${escapeHtml(String(c.phone))}</span>` : ''}
+      </button>
+    `).join('');
+    wrap.querySelectorAll('.customer-suggestion-item').forEach((btn, i) => {
+      // mousedown (not click) fires before the input's blur handler hides the list
+      btn.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        pickCustomer(matches[i]);
+      });
+    });
+  } else {
+    wrap.hidden = true;
+    wrap.innerHTML = '';
+    hint.hidden = false;
+  }
+}
+
+function pickCustomer(cust) {
+  state.pendingCustomer = cust;
+
+  const search = document.getElementById('customer-search');
+  search.value = cust.name;
+  search.disabled = true;
+
+  document.getElementById('customer-suggestions').hidden = true;
+  document.getElementById('customer-new-hint').hidden = true;
+  document.getElementById('customer-new-fields').hidden = true;
+
+  const card = document.getElementById('customer-picked-card');
+  card.hidden = false;
+  document.getElementById('customer-picked-name').textContent = cust.name;
+
+  const phoneEl = document.getElementById('customer-picked-phone');
+  phoneEl.textContent = cust.phone ? `โทร: ${cust.phone}` : '';
+  phoneEl.hidden = !cust.phone;
+
+  const addrEl = document.getElementById('customer-picked-address');
+  addrEl.textContent = cust.address ? `ที่อยู่: ${cust.address}` : '';
+  addrEl.hidden = !cust.address;
+
+  const noteEl = document.getElementById('customer-picked-note');
+  noteEl.textContent = cust.note ? `หมายเหตุ: ${cust.note}` : '';
+  noteEl.hidden = !cust.note;
+}
+
+function clearPickedCustomer() {
+  state.pendingCustomer = null;
+  const search = document.getElementById('customer-search');
+  search.disabled = false;
+  search.value = '';
+  document.getElementById('customer-picked-card').hidden = true;
+  search.focus();
+}
+
+/** Reads the checkout popup's customer section into the fields submitOrder
+ * needs. { valid: false } if the required name is blank - the caller shows
+ * a toast and keeps the popup open rather than saving an order with nobody
+ * attached to it. */
+function readCustomerFormState() {
+  const name = document.getElementById('customer-search').value.trim();
+  if (!name) return { valid: false };
+
+  if (state.pendingCustomer) {
+    const c = state.pendingCustomer;
+    return {
+      valid: true,
+      fields: {
+        customer_id: c.customer_id || '',
+        customer_name: c.name || name,
+        customer_phone: c.phone || '',
+        customer_address: c.address || '',
+        customer_note: c.note || '',
+        save_customer: false, // already in the Customers sheet - nothing new to save
+      },
+    };
+  }
+
+  const fieldsOpen = !document.getElementById('customer-new-fields').hidden;
+  return {
+    valid: true,
+    fields: {
+      customer_id: '',
+      customer_name: name,
+      customer_phone: fieldsOpen ? document.getElementById('customer-new-phone').value.trim() : '',
+      customer_address: fieldsOpen ? document.getElementById('customer-new-address').value.trim() : '',
+      customer_note: fieldsOpen ? document.getElementById('customer-new-note').value.trim() : '',
+      save_customer: fieldsOpen ? document.getElementById('customer-new-save').checked : false,
+    },
+  };
 }
 
 async function renderCourierOptions() {
@@ -418,7 +578,14 @@ async function renderCourierOptions() {
     btn.textContent = c.name;
     btn.dataset.id = c.courier_id;
     btn.addEventListener('click', () => {
+      const customerForm = readCustomerFormState();
+      if (!customerForm.valid) {
+        showToast('กรุณาใส่ชื่อลูกค้าก่อนเลือกผู้จัดส่ง');
+        document.getElementById('customer-search').focus();
+        return;
+      }
       state.pendingCourier = c.name;
+      state.pendingCustomerFields = customerForm.fields;
       wrap.querySelectorAll('.courier-btn').forEach(b => b.classList.remove('selected'));
       btn.classList.add('selected');
       submitOrder();
@@ -437,14 +604,14 @@ function newClientUid() {
 async function submitOrder(retryPayload) {
   document.getElementById('modal-courier').classList.remove('active');
 
-  const payload = retryPayload || {
+  const payload = retryPayload || Object.assign({
     store_id: state.currentStore.store_id,
     client_id: state.clientId,
     user_name: state.user ? state.user.name : '',
     items: Object.values(state.cart),
     courier: state.pendingCourier,
     client_uid: newClientUid(),
-  };
+  }, state.pendingCustomerFields || {});
   state.lastSubmit = payload;
 
   const btn = document.getElementById('btn-save-order');
@@ -495,7 +662,9 @@ function showResultModal(ok, res, payload) {
     sub.textContent = res.duplicate
       ? 'ระบบตรวจพบว่าออเดอร์เดิมเข้าชีตไปเรียบร้อยแล้ว จึงไม่บันทึกซ้ำ'
       : 'ข้อมูลเข้า Google Sheet เรียบร้อยแล้ว';
+    const customerName = res.customer_name || payload.customer_name || '';
     detail.innerHTML = `
+      ${customerName ? `<div class="result-line"><span>ลูกค้า</span><b>${escapeHtml(customerName)}</b></div>` : ''}
       <div class="result-line"><span>ยอดรวม</span><b>${res.total} บาท</b></div>
       <div class="result-line"><span>คนส่ง</span><b>${escapeHtml(payload.courier || '-')}</b></div>
       <div class="result-line"><span>เวลา</span><b>${escapeHtml(res.timestamp || nowLocalString())}</b></div>
@@ -609,7 +778,7 @@ function renderHistory() {
           <span class="history-badge${voided ? ' void' : ''}">${escapeHtml(voided ? 'ยกเลิกแล้ว' : 'บันทึกแล้ว')}</span>
           <span class="history-total">${Number(o.total || 0).toLocaleString('th-TH')}.-</span>
         </div>
-        <div class="history-meta">${escapeHtml(o.user_name || '-')} · ส่งโดย ${escapeHtml(o.courier || '-')}</div>
+        <div class="history-meta">${escapeHtml(o.user_name || '-')} · ส่งโดย ${escapeHtml(o.courier || '-')}${o.customer_name ? ` · ลูกค้า ${escapeHtml(o.customer_name)}` : ''}</div>
         <div class="history-summary">${escapeHtml(o.item_summary || '')}</div>
         <div class="history-detail" hidden>
           ${lines}
@@ -724,6 +893,18 @@ function bindEvents() {
   document.getElementById('btn-save-order').addEventListener('click', openCourierModal);
   document.getElementById('btn-cancel-courier').addEventListener('click', () => {
     document.getElementById('modal-courier').classList.remove('active');
+  });
+
+  // ----- customer section inside the checkout popup -----
+  document.getElementById('customer-search').addEventListener('input', renderCustomerSuggestions);
+  document.getElementById('customer-search').addEventListener('blur', () => {
+    // delay so a suggestion's mousedown still registers before the list hides
+    setTimeout(() => { document.getElementById('customer-suggestions').hidden = true; }, 150);
+  });
+  document.getElementById('btn-customer-clear').addEventListener('click', clearPickedCustomer);
+  document.getElementById('btn-toggle-newcustomer').addEventListener('click', () => {
+    const fields = document.getElementById('customer-new-fields');
+    fields.hidden = !fields.hidden;
   });
 }
 

@@ -111,10 +111,44 @@
   </div>
 </div>
 
-<!-- ================= MODAL: PICK COURIER ================= -->
+<!-- ================= MODAL: CHECKOUT (customer + courier) ================= -->
 <div id="modal-courier" class="modal-overlay">
   <div class="modal-box">
-    <div class="modal-title">เลือกผู้จัดส่ง</div>
+    <div class="modal-title">ยืนยันบันทึกออเดอร์</div>
+
+    <!-- Customer section: required name, auto-fill if found, optional new-customer fields -->
+    <div class="checkout-section">
+      <div class="checkout-label">ลูกค้า <span class="required-star">*</span></div>
+      <input id="customer-search" class="text-input" type="text" placeholder="พิมพ์ชื่อหรือเบอร์โทรลูกค้า" autocomplete="off">
+      <div id="customer-suggestions" class="customer-suggestions" hidden></div>
+
+      <!-- shown once an existing customer from the list is picked -->
+      <div id="customer-picked-card" class="customer-card" hidden>
+        <div class="customer-card-row">
+          <b id="customer-picked-name"></b>
+          <button type="button" id="btn-customer-clear" class="link-btn">เปลี่ยน</button>
+        </div>
+        <div class="customer-card-row muted" id="customer-picked-phone"></div>
+        <div class="customer-card-row muted" id="customer-picked-address"></div>
+        <div class="customer-card-row muted" id="customer-picked-note"></div>
+      </div>
+
+      <!-- shown when the typed name doesn't match anyone in the Customers sheet -->
+      <div id="customer-new-hint" class="customer-new-hint" hidden>
+        <div class="muted customer-new-hint-text">ไม่พบลูกค้านี้ในระบบ (ถือเป็นลูกค้าหน้าร้านได้ ไม่บังคับกรอกเพิ่ม)</div>
+        <button type="button" id="btn-toggle-newcustomer" class="link-btn">+ เพิ่มที่อยู่ / เบอร์โทร / หมายเหตุ</button>
+        <div id="customer-new-fields" class="customer-new-fields" hidden>
+          <input id="customer-new-phone" class="text-input" type="tel" placeholder="เบอร์โทร" inputmode="numeric">
+          <textarea id="customer-new-address" class="text-input textarea-input" placeholder="ที่อยู่จัดส่ง" rows="2"></textarea>
+          <textarea id="customer-new-note" class="text-input textarea-input" placeholder="หมายเหตุ" rows="2"></textarea>
+          <label class="checkbox-row"><input id="customer-new-save" type="checkbox" checked> บันทึกลูกค้านี้ไว้ใช้ครั้งหน้า</label>
+        </div>
+      </div>
+    </div>
+
+    <div class="checkout-divider"></div>
+
+    <div class="checkout-label">เลือกผู้จัดส่ง</div>
     <div id="courier-options" class="courier-options"></div>
     <button id="btn-cancel-courier" class="btn-cancel">ยกเลิก</button>
   </div>

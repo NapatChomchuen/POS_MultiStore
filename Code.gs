@@ -714,12 +714,99 @@ function findOrderByClientUid_(sh, clientUid) {
   return null;
 }
 
+/** ================== APP BOOTSTRAP ==================
+ *  One request that returns everything the app needs to start.
+ *
+ *  Why this exists: the web app is deployed "Execute as: Me", so every phone in
+ *  the shop runs as the SAME Google account and they all share ONE execution
+ *  queue — Apps Script serves the requests one after another, not in parallel.
+ *  Measured on this deployment, each call costs roughly 2.5-3 seconds of queue
+ *  time regardless of how little it returns (getStores answers 321 bytes and has
+ *  been observed taking 15s and 47s under load). So what makes the app feel slow
+ *  is the NUMBER of requests, not the weight of any single one.
+ *
+ *  Opening the app used to fire getUser + getStores + getCourierEarnings, then
+ *  getInventory when entering a store, then getCustomers + getCouriers when the
+ *  checkout popup opened — six queued executions before one order could even be
+ *  saved, and submitOrder had to line up behind all of them. This collapses all
+ *  of that into a single call.
+ *
+ *  getCourierEarnings is deliberately NOT bundled in here: it scans the whole
+ *  Orders_shop_a sheet and takes 8-10s by itself, which would drag the one call
+ *  the app waits on down to its speed. It stays separate and is loaded lazily.
+ */
+function buildBootstrap_(ss, clientId) {
+  // keyed by store_id so opening a store needs no further request
+  const inventory = {};
+  sheetToObjects_(ss.getSheetByName(SHEET_INVENTORY))
+    .filter(i => isTrue_(i.active))
+    .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0))
+    .forEach(i => {
+      const sid = String(i.store_id);
+      if (!inventory[sid]) inventory[sid] = [];
+      inventory[sid].push(i);
+    });
+
+  const customersSh = ss.getSheetByName(SHEET_CUSTOMERS);
+
+  return {
+    user: clientId ? findUser_(ss, clientId) : null,
+    stores: sheetToObjects_(ss.getSheetByName(SHEET_STORES)).filter(s => isTrue_(s.active)),
+    couriers: sheetToObjects_(ss.getSheetByName(SHEET_COURIERS)).filter(c => isTrue_(c.active)),
+    inventory: inventory,
+    customers: customersSh ? sheetToObjects_(customersSh) : [],
+  };
+}
+
+/** Finds one user WITHOUT pulling every other user's photo into memory.
+ *  Avatars are stored as base64 data: URIs directly in the Users sheet (roughly
+ *  20-30 KB of text per user, see buildAvatarDataUri_), so the obvious
+ *  `sheetToObjects_(Users).find(...)` read every single user's photo on every
+ *  app open just to hand back one row. This reads only the client_id column to
+ *  locate the row, then fetches that one row. */
+function findUser_(ss, clientId) {
+  const sh = ss.getSheetByName(SHEET_USERS);
+  if (!sh) return null;
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return null;
+
+  const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  const idCol = headers.indexOf('client_id');
+  if (idCol === -1) return null;
+
+  const ids = sh.getRange(2, idCol + 1, lastRow - 1, 1).getValues();
+  for (let i = 0; i < ids.length; i++) {
+    if (String(ids[i][0]) === String(clientId)) {
+      const row = sh.getRange(i + 2, 1, 1, headers.length).getValues()[0];
+      const obj = {};
+      headers.forEach((h, c) => (obj[h] = row[c]));
+      return obj;
+    }
+  }
+  return null;
+}
+
 /** ================== GET (read-only queries) ================== */
 function doGet(e) {
   const action = e.parameter.action;
   const ss = getSS_();
 
   try {
+    // One-shot startup payload — see buildBootstrap_. The individual actions
+    // below are kept as-is so a phone still running an older cached app.js
+    // (its service worker may not have updated yet) keeps working unchanged.
+    if (action === 'getBootstrap') {
+      const boot = buildBootstrap_(ss, e.parameter.client_id);
+      return jsonOut_({
+        ok: true,
+        user: boot.user,
+        stores: boot.stores,
+        couriers: boot.couriers,
+        inventory: boot.inventory,
+        customers: boot.customers,
+      });
+    }
+
     if (action === 'getStores') {
       const stores = sheetToObjects_(ss.getSheetByName(SHEET_STORES)).filter(s => s.active);
       return jsonOut_({ ok: true, stores });
@@ -739,10 +826,7 @@ function doGet(e) {
     }
 
     if (action === 'getUser') {
-      const clientId = e.parameter.client_id;
-      const users = sheetToObjects_(ss.getSheetByName(SHEET_USERS));
-      const user = users.find(u => u.client_id === clientId);
-      return jsonOut_({ ok: true, user: user || null });
+      return jsonOut_({ ok: true, user: findUser_(ss, e.parameter.client_id) });
     }
 
     if (action === 'getCourierEarnings') {

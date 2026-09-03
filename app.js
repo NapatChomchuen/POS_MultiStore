@@ -12,9 +12,12 @@ const state = {
   stores: [],
   currentStore: null,
   inventory: [],
+  inventoryByStore: {}, // store_id -> [items], filled by the bootstrap call so
+                        // opening a store costs no extra request (see openStore)
   invById: {},      // item_id -> inventory row (has bundle_group / bundle_price)
   couriers: [],
   customers: [],      // customer directory, loaded once per session (see ensureCustomersLoaded)
+  customersLoaded: false,
   cart: {},          // item_id -> { item_name, price, qty }
   orders: [],        // order history of the store currently open (newest first)
   historyScope: 'all', // 'all' = everyone's orders in this store, 'mine' = this device only
@@ -35,23 +38,69 @@ function getOrCreateClientId() {
   return id;
 }
 
-/* ---------------- API helpers ---------------- */
-async function apiGet(action, params) {
+/* ---------------- API helpers ----------------
+ * Every call to the Apps Script backend costs roughly 2.5-3 seconds, and because
+ * the web app is deployed "Execute as: Me" all phones in the shop share ONE
+ * execution queue — Apps Script runs the requests one after another, not in
+ * parallel. A request that hangs therefore doesn't only block this phone, it
+ * holds up everyone else's saves behind it.
+ *
+ * So each call gets:
+ *   - a hard timeout, so a queued request can never be waited on forever;
+ *   - a real status check, because Apps Script answers with an HTML error page
+ *     (quota, transient 500, sign-in) rather than JSON when it fails — that used
+ *     to blow up inside res.json() and get reported to the user as "ไม่มี
+ *     อินเทอร์เน็ต", which sent everyone looking at the wrong problem;
+ *   - one backoff retry, for the transient failures the queueing itself causes.
+ *
+ * Retrying a POST is safe for every action this app sends: submitOrder is
+ * guarded by client_uid (see newClientUid), and registerUser / voidOrder /
+ * resetCourierEarnings all converge on the same result when repeated. */
+const API_TIMEOUT_MS = 25000;
+
+async function apiFetch(url, options, { timeoutMs = API_TIMEOUT_MS, retries = 1 } = {}) {
+  let lastErr;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, Object.assign({ signal: ctrl.signal }, options));
+      if (!res.ok) throw new Error(`เซิร์ฟเวอร์ตอบกลับผิดพลาด (HTTP ${res.status})`);
+      const text = await res.text();
+      try {
+        return JSON.parse(text);
+      } catch (parseErr) {
+        throw new Error('เซิร์ฟเวอร์ไม่ได้ตอบกลับเป็นข้อมูลที่ถูกต้อง (Apps Script อาจติดโควตา)');
+      }
+    } catch (err) {
+      lastErr = err && err.name === 'AbortError'
+        ? new Error(`เซิร์ฟเวอร์ไม่ตอบกลับภายใน ${Math.round(timeoutMs / 1000)} วินาที`)
+        : err;
+      if (attempt === retries) break;
+      await new Promise(r => setTimeout(r, 1000 * (attempt + 1))); // backoff
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  throw lastErr;
+}
+
+async function apiGet(action, params, opts) {
   const url = new URL(GAS_URL);
   url.searchParams.set('action', action);
   Object.entries(params || {}).forEach(([k, v]) => url.searchParams.set(k, v));
-  const res = await fetch(url.toString());
-  return res.json();
+  return apiFetch(url.toString(), {}, opts);
 }
 
-async function apiPost(action, payload) {
-  const res = await fetch(GAS_URL, {
+async function apiPost(action, payload, opts) {
+  return apiFetch(GAS_URL, {
     method: 'POST',
     // text/plain avoids a CORS preflight against Apps Script
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
     body: JSON.stringify({ action, ...payload }),
-  });
-  return res.json();
+  }, opts);
 }
 
 /* ---------------- Toast ---------------- */
@@ -70,10 +119,65 @@ function showPage(id) {
   document.getElementById(id).classList.add('active');
 }
 
-/* ---------------- Init / identify user ---------------- */
+/* ---------------- Init / identify user ----------------
+ * Startup used to fire three separate backend calls (getUser, getStores,
+ * getCourierEarnings) and then two or three more as the user walked through
+ * placing an order. Since all phones in the shop queue behind a single Apps
+ * Script execution slot (see the API helpers above), those calls were the main
+ * reason the app felt slow and the reason a save could end up waiting behind
+ * half a minute of other people's requests. It is now one call. */
 async function init() {
   state.clientId = getOrCreateClientId();
 
+  bindEvents();
+  await loadBootstrap();
+
+  // Deliberately last and not awaited: this is the single heaviest query in the
+  // app (it scans the whole Orders_shop_a sheet, 8-10s) and nothing on screen
+  // depends on it, so it must never sit in front of anything the user is
+  // waiting for.
+  loadCourierEarnings();
+}
+
+/** Pulls user + stores + couriers + all inventory + customers in one request. */
+async function loadBootstrap() {
+  try {
+    const res = await apiGet('getBootstrap', { client_id: state.clientId });
+    if (res && res.ok) {
+      applyBootstrap(res);
+      return;
+    }
+    // Apps Script answers { ok:false, error:'unknown action' } when Code.gs has
+    // not been redeployed with getBootstrap yet. Fall back so that updating the
+    // web files before redeploying the script degrades in speed rather than
+    // breaking the app outright.
+    console.warn('getBootstrap unavailable, using legacy calls:', res && res.error);
+  } catch (err) {
+    console.error(err);
+    showToast('เชื่อมต่อเซิร์ฟเวอร์ไม่สำเร็จ: ' + (err.message || err));
+  }
+  await legacyBootstrap();
+}
+
+function applyBootstrap(res) {
+  state.stores = res.stores || [];
+  state.couriers = res.couriers || [];
+  state.customers = res.customers || [];
+  state.customersLoaded = true;
+  state.inventoryByStore = res.inventory || {};
+
+  renderStoreGrid();
+
+  if (res.user) {
+    state.user = res.user;
+    renderProfile();
+  } else {
+    openNewUserModal();
+  }
+}
+
+/** The pre-getBootstrap call sequence, kept only as a fallback path. */
+async function legacyBootstrap() {
   try {
     const { user } = await apiGet('getUser', { client_id: state.clientId });
     if (user) {
@@ -83,20 +187,29 @@ async function init() {
       openNewUserModal();
     }
   } catch (err) {
-    showToast('เชื่อมต่อ Google Sheet ไม่สำเร็จ ตรวจสอบ GAS_URL ใน app.js');
     console.error(err);
   }
-
-  loadStores();
-  loadCourierEarnings();
-  bindEvents();
+  await loadStores();
 }
 
 /* ---------------- Courier commission summary (shop_a only) ----------------
  * Purely additive/read-only: a separate API call + a separate DOM section,
  * doesn't touch the store-picker or order-entry flow at all. If the call
- * fails for any reason the panel just silently stays hidden. */
-async function loadCourierEarnings() {
+ * fails for any reason the panel just silently stays hidden.
+ *
+ * It is also the most expensive query in the system: it reads every row ever
+ * written to Orders_shop_a and JSON.parses each one, taking 8-10s on its own.
+ * It used to be re-run immediately after every successful save, which meant
+ * each completed order injected the slowest possible request into the shared
+ * execution queue at exactly the moment other staff were trying to save theirs.
+ * It now runs on startup and when the store picker is reopened, throttled, and
+ * is only forced when something actually changed the numbers. */
+let lastEarningsLoad = 0;
+const EARNINGS_MIN_INTERVAL_MS = 60000;
+
+async function loadCourierEarnings({ force = false } = {}) {
+  if (!force && Date.now() - lastEarningsLoad < EARNINGS_MIN_INTERVAL_MS) return;
+  lastEarningsLoad = Date.now();
   try {
     const { earnings } = await apiGet('getCourierEarnings');
     renderCourierEarnings(earnings || []);
@@ -130,7 +243,7 @@ async function resetCourierEarnings(courierName) {
     const res = await apiPost('resetCourierEarnings', { courier: courierName });
     if (res.ok) {
       showToast(`รีเซ็ตยอดของ ${courierName} แล้ว`);
-      loadCourierEarnings();
+      loadCourierEarnings({ force: true }); // the numbers really did just change
     } else {
       showToast('รีเซ็ตไม่สำเร็จ: ' + res.error);
     }
@@ -238,6 +351,25 @@ async function loadStores() {
   }
 }
 
+/* ---------------- Product / store images ----------------
+ * The Inventory and Stores sheets point at the ORIGINAL photos under images/ —
+ * 1000x1000 px files of 350-800 KB each, nearly 7 MB for one store's grid — but
+ * the tiles they fill are only about 111 px wide and the store logo only 56 px.
+ * Beyond the download, each 1000x1000 image also costs ~4 MB of decoded bitmap
+ * in memory, so nine of them made the grid stutter on a mid-range phone.
+ *
+ * tools/optimize-images.py pre-builds a small version of every photo under
+ * images/opt/, keeping the same folder and file name and changing only the
+ * extension, so this can swap the path at render time. That matters because the
+ * sheet's image_url values include spaces and Thai characters — renaming the
+ * real files would have meant hand-editing every row in Google Sheets. Anything
+ * without an optimized twin falls through to its original path unchanged. */
+function optimizedImageUrl(url) {
+  const src = String(url || '');
+  const m = src.match(/^images\/(.+)\.(png|jpe?g)$/i);
+  return m ? `images/opt/${m[1]}.jpg` : src;
+}
+
 function renderStoreGrid() {
   const grid = document.getElementById('store-grid');
   grid.innerHTML = '';
@@ -245,7 +377,7 @@ function renderStoreGrid() {
     const tile = document.createElement('button');
     tile.className = 'store-tile';
     const logoStyle = store.logo_url
-      ? `background-image:url('${store.logo_url}')`
+      ? `background-image:url('${optimizedImageUrl(store.logo_url)}')`
       : `background:${store.color || '#8B7FD6'}`;
     tile.innerHTML = `
       <div class="store-logo" style="${logoStyle}">${store.logo_url ? '' : (store.logo_emoji || '')}</div>
@@ -264,17 +396,31 @@ async function openStore(store) {
   document.getElementById('order-user-name').textContent = state.user ? state.user.name : '';
   showPage('page-order');
 
+  // The bootstrap call already brought every store's inventory back, so entering
+  // a store is normally instant and costs no request at all. The fetch below is
+  // only reached when bootstrap fell back to the legacy path.
+  const cached = state.inventoryByStore[store.store_id];
+  if (cached && cached.length) {
+    applyInventory(cached);
+    return;
+  }
+
   try {
     const { items } = await apiGet('getInventory', { store_id: store.store_id });
-    state.inventory = items || [];
-    state.invById = {};
-    state.inventory.forEach(i => (state.invById[i.item_id] = i));
-    renderProductGrid();
-    renderSummary();
+    state.inventoryByStore[store.store_id] = items || [];
+    applyInventory(items || []);
   } catch (err) {
     showToast('โหลดสินค้าไม่สำเร็จ');
     console.error(err);
   }
+}
+
+function applyInventory(items) {
+  state.inventory = items;
+  state.invById = {};
+  state.inventory.forEach(i => (state.invById[i.item_id] = i));
+  renderProductGrid();
+  renderSummary();
 }
 
 function renderProductGrid() {
@@ -283,7 +429,7 @@ function renderProductGrid() {
   state.inventory.forEach(item => {
     const tile = document.createElement('div');
     tile.className = 'product-tile';
-    const boxStyle = item.image_url ? ` style="background-image:url('${item.image_url}')"` : '';
+    const boxStyle = item.image_url ? ` style="background-image:url('${optimizedImageUrl(item.image_url)}')"` : '';
     tile.innerHTML = `
       <div class="product-box" data-id="${item.item_id}"${boxStyle}>
         <div class="product-qty-badge">0</div>
@@ -410,11 +556,15 @@ function openCourierModal() {
  * that doesn't match offers an optional "+ เพิ่มที่อยู่/เบอร์โทร/หมายเหตุ" - left
  * collapsed, this is just a walk-in order with a name and nothing else saved. */
 async function ensureCustomersLoaded() {
-  if (state.customers.length) return;
+  // a flag rather than `if (state.customers.length)`, so a shop that genuinely
+  // has no customers yet doesn't re-request the empty list every checkout
+  if (state.customersLoaded) return;
+  state.customersLoaded = true;
   try {
     const { customers } = await apiGet('getCustomers');
     state.customers = customers || [];
   } catch (err) {
+    state.customersLoaded = false; // let the next checkout try again
     console.warn('customers unavailable', err);
   }
 }
@@ -620,24 +770,41 @@ async function submitOrder(retryPayload) {
   btn.textContent = 'กำลังบันทึก...';
 
   try {
-    const res = await apiPost('submitOrder', payload);
+    // Saving is the one thing that must not give up early, and retrying is safe
+    // because client_uid makes a repeat of the same order a no-op server-side.
+    const res = await apiPost('submitOrder', payload, { timeoutMs: 30000, retries: 2 });
     if (res.ok) {
       state.lastSubmit = null;
       state.cart = {};
-      renderProductGrid();
+      resetProductQuantities();
       renderSummary();
-      loadCourierEarnings();
       showResultModal(true, res, payload);
     } else {
       showResultModal(false, res, payload);
     }
   } catch (err) {
     console.error(err);
-    showResultModal(false, { error: 'เชื่อมต่ออินเทอร์เน็ตไม่ได้' }, payload);
+    // report what actually went wrong — this used to always claim the phone had
+    // no internet, even when the real cause was an Apps Script timeout or error
+    showResultModal(false, { error: err.message || 'เชื่อมต่ออินเทอร์เน็ตไม่ได้' }, payload);
   } finally {
     btn.disabled = false;
     btn.textContent = btnLabel;
   }
+}
+
+/** Clears the on-screen quantities without tearing the grid down.
+ * renderProductGrid() used to be called here, which wipes every tile and builds
+ * them again from scratch — forcing the browser to re-decode all nine product
+ * photos immediately after a save. Only the numbers change when a cart is
+ * emptied, so only the numbers are touched. */
+function resetProductQuantities() {
+  document.querySelectorAll('.product-box').forEach(box => {
+    box.classList.remove('selected');
+    const badge = box.querySelector('.product-qty-badge');
+    if (badge) badge.textContent = '0';
+  });
+  document.querySelectorAll('.stepper-qty').forEach(el => (el.textContent = '0'));
 }
 
 /* ---------------- Save result modal ----------------
@@ -800,7 +967,7 @@ async function voidOrder(orderId) {
     if (res.ok) {
       showToast('ยกเลิกออเดอร์แล้ว');
       loadOrders();
-      loadCourierEarnings();
+      loadCourierEarnings({ force: true }); // a voided order drops out of the totals
     } else {
       showToast('ยกเลิกไม่สำเร็จ: ' + res.error);
     }
@@ -837,7 +1004,12 @@ function bindEvents() {
     handleExistingAvatarChosen(e.target.files[0]);
   });
 
-  document.getElementById('btn-back').addEventListener('click', () => showPage('page-login'));
+  document.getElementById('btn-back').addEventListener('click', () => {
+    showPage('page-login');
+    // the earnings panel lives on this page, so refresh it on the way in rather
+    // than after every save (throttled inside loadCourierEarnings)
+    loadCourierEarnings();
+  });
 
   document.getElementById('product-grid').addEventListener('click', (e) => {
     const stepBtn = e.target.closest('.stepper-btn');
